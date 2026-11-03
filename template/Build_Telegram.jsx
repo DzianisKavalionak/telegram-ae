@@ -22,7 +22,15 @@
 
 
     function fail(message) { throw new Error(message); }
-    function tr(layer) { return layer.property("ADBE Transform Group"); }
+    function requiredProperty(group, matchName) {
+        if (!group) { fail("Не найдена родительская группа для свойства AE: " + matchName); }
+        var prop = group.property(matchName);
+        if (!prop) {
+            fail("Не найдено обязательное свойство AE: " + matchName + " (группа: " + group.name + ")");
+        }
+        return prop;
+    }
+    function tr(layer) { return requiredProperty(layer, "ADBE Transform Group"); }
     function fileAt(path) {
         if (/^(?:[A-Za-z]:[\\\/]|[\\\/]{2})/.test(path)) { return new File(path); }
         return new File(base.fsName + "/" + path);
@@ -237,18 +245,21 @@
                 CFG.camera.startRotation[i], CFG.camera.endRotation[i], true);
         }
         var camera = main.layers.addCamera("CAMERA_3D", [CFG.width/2,CFG.height/2]);
-        camera.parent = rig;
+        // Keep local transforms; Position and Point of Interest are set below.
+        camera.setParentWithJump(rig);
         camera.autoOrient = AutoOrientType.CAMERA_OR_POINT_OF_INTEREST;
-        tr(camera).property("ADBE Point of Interest").setValue([0,0,0]);
-        animate(tr(camera).property("ADBE Position"), 0, CFG.duration,
+        var cameraTransform = tr(camera);
+        // A camera's Point of Interest uses the ADBE Anchor Point match name.
+        requiredProperty(cameraTransform, "ADBE Anchor Point").setValue([0,0,0]);
+        animate(requiredProperty(cameraTransform, "ADBE Position"), 0, CFG.duration,
             [0,0,-CFG.camera.zoom/CFG.camera.startMagnification],
             [0,0,-CFG.camera.zoom/CFG.camera.endMagnification], true);
-        var options = camera.property("ADBE Camera Options Group");
-        options.property("ADBE Camera Zoom").setValue(CFG.camera.zoom);
-        options.property("ADBE Camera Depth of Field").setValue(CFG.camera.depthOfField ? 1 : 0);
-        options.property("ADBE Camera Aperture").setValue(CFG.camera.aperture);
-        options.property("ADBE Camera Blur Level").setValue(CFG.camera.blurLevel);
-        options.property("ADBE Camera Focus Distance").expression = "length(transform.position, transform.pointOfInterest)";
+        var options = requiredProperty(camera, "ADBE Camera Options Group");
+        requiredProperty(options, "ADBE Camera Zoom").setValue(CFG.camera.zoom);
+        requiredProperty(options, "ADBE Camera Depth of Field").setValue(CFG.camera.depthOfField ? 1 : 0);
+        requiredProperty(options, "ADBE Camera Aperture").setValue(CFG.camera.aperture);
+        requiredProperty(options, "ADBE Camera Blur Level").setValue(CFG.camera.blurLevel);
+        requiredProperty(options, "ADBE Camera Focus Distance").expression = "length(transform.position, transform.pointOfInterest)";
         camera.comment = "Native two-node 3D camera. Dolly keys on Position; orbit keys on parent CAMERA_RIG. DOF disabled initially for text clarity.";
     }
 
@@ -257,7 +268,7 @@
     var backgroundFile = fileAt(CFG.background || "assets/telegram_background.png");
     if (!backgroundFile.exists) { alert("Не найден постоянный фон assets/telegram_background.png. Скопируйте его из шаблона репозитория вместе с пакетом."); return; }
 
-    app.beginUndoGroup("Build Telegram 3D Keylight V1");
+    app.beginUndoGroup("Build Telegram 3D Keylight");
     try {
         if (!app.project) { app.newProject(); }
         var root = app.project.items.addFolder(CFG.name);
