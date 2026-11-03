@@ -2,7 +2,7 @@
    Prepare shot.jsxinc with mappingStatus: measured and the user-selected rows. */
 (function () {
     var settings = {
-        name: "TELEGRAM_3D_KEYLIGHT_V1",
+        name: "TELEGRAM_3D_KEYLIGHT_V3",
         width: 1920, height: 1080, fps: 25, duration: 6,
         screenshot: "assets/feed_green.png", background: "assets/telegram_background.png",
         expectedWidth: 3840, expectedHeight: 5760,
@@ -32,6 +32,11 @@
             startRotation: [1.1, -2.5, -0.3], endRotation: [0, 0.8, 0],
             depthOfField: false, aperture: 6, blurLevel: 50
         },
+        background3D: {
+            depth: 500, overscan: 1.25,
+            startRotation: [0.5, -1.0, -0.6], endRotation: [-0.5, 1.0, 0.6]
+        },
+        sceneBlur: {enabled: true, radius: 4, holdUntil: 1.9, clearAt: 2.8},
         shadow: {enabled: true, opacity: 14, distance: 5, softness: 18},
         motionBlur: true
     };

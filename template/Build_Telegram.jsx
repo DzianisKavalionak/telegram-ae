@@ -234,6 +234,63 @@
         addShadow(layer);
         return layer;
     }
+    function addBackground(main, file, assets) {
+        var config = CFG.background3D || {};
+        var depth = typeof config.depth === "number" ? config.depth : 500;
+        var overscan = typeof config.overscan === "number" ? config.overscan : 1.25;
+        var firstRotation = config.startRotation || [0.5, -1.0, -0.6];
+        var lastRotation = config.endRotation || [-0.5, 1.0, 0.6];
+        var frontDepth = CFG.feed.center[2];
+        if (CFG.profile.enabled) { frontDepth = Math.max(frontDepth, CFG.profile.center[2]); }
+        if (depth <= frontDepth || overscan < 1 || CFG.camera.zoom <= 0 ||
+            CFG.camera.startMagnification <= 0 || CFG.camera.endMagnification <= 0) {
+            fail("Неверные параметры 3D-фона: он должен быть позади карточек и иметь запас масштаба.");
+        }
+        var source = importImage(file, assets);
+        var layer = main.layers.add(source);
+        layer.name = "BACKGROUND_3D_ROTATION";
+        layer.threeDLayer = true;
+        layer.motionBlur = CFG.motionBlur;
+        layer.outPoint = CFG.duration;
+        var transform = tr(layer);
+        requiredProperty(transform, "ADBE Position").setValue([CFG.width/2, CFG.height/2, depth]);
+        var cover = Math.max(CFG.width/source.width, CFG.height/source.height);
+        var farthestCamera = Math.max(CFG.camera.zoom/CFG.camera.startMagnification,
+            CFG.camera.zoom/CFG.camera.endMagnification);
+        // Compensate for background depth, then enlarge for camera/plane rotations.
+        var scale = 100 * cover * (farthestCamera + depth) / CFG.camera.zoom * overscan;
+        requiredProperty(transform, "ADBE Scale").setValue([scale,scale,scale]);
+        var names = ["ADBE Rotate X", "ADBE Rotate Y", "ADBE Rotate Z"], i;
+        for (i = 0; i < names.length; i++) {
+            animate(requiredProperty(transform, names[i]), 0, CFG.duration,
+                firstRotation[i], lastRotation[i], true);
+        }
+        layer.comment = "Shared 3D background behind the cards. Scale covers the farthest camera distance plus rotation overscan.";
+        return layer;
+    }
+    function addSceneBlur(main, assets) {
+        var config = CFG.sceneBlur || {};
+        if (config.enabled === false) { return; }
+        var radiusAt1080 = typeof config.radius === "number" ? config.radius : 4;
+        var clearAt = typeof config.clearAt === "number" ? config.clearAt : CFG.feed.scrollEnd;
+        var holdUntil = typeof config.holdUntil === "number" ? config.holdUntil : Math.max(0, clearAt-0.9);
+        if (radiusAt1080 < 0 || holdUntil < 0 || clearAt <= holdUntil || clearAt > CFG.duration) {
+            fail("Неверный тайминг Camera Lens Blur: нужны начальное размытие и плавный переход к нулю внутри сцены.");
+        }
+        var layer = main.layers.addSolid([1,1,1], "SCENE_CAMERA_LENS_BLUR", CFG.width, CFG.height, 1, CFG.duration);
+        layer.source.parentFolder = assets;
+        layer.adjustmentLayer = true;
+        layer.threeDLayer = false;
+        layer.outPoint = CFG.duration;
+        var effects = requiredProperty(layer, "ADBE Effect Parade");
+        if (!effects.canAddProperty("ADBE Camera Lens Blur")) { fail("Эффект Camera Lens Blur не найден в этой установке AE."); }
+        var effect = effects.addProperty("ADBE Camera Lens Blur");
+        var radius = requiredProperty(effect, "ADBE Camera Lens Blur-0001");
+        var initialRadius = radiusAt1080 * CFG.width / 1920;
+        radius.setValueAtTime(0, initialRadius);
+        animate(radius, holdUntil, clearAt, initialRadius, 0, true);
+        layer.comment = "Camera Lens Blur over the complete scene from frame zero. Radius reaches zero at scroll end; native camera DOF remains separate.";
+    }
     function addCamera(main) {
         var rig = main.layers.addNull(CFG.duration);
         rig.name = "CAMERA_RIG_EDIT_MOVEMENT"; rig.threeDLayer = true;
@@ -287,14 +344,7 @@
         }
         main.motionBlur = CFG.motionBlur;
         main.shutterAngle = 180;
-        if (backgroundFile) {
-            var bgSource = importImage(backgroundFile, assets);
-            var bg = main.layers.add(bgSource);
-            bg.name = "BACKGROUND_REPLACE_HERE"; bg.outPoint = CFG.duration;
-            var cover = 100 * Math.max(CFG.width/bgSource.width, CFG.height/bgSource.height);
-            tr(bg).property("ADBE Scale").setValue([cover,cover]);
-            tr(bg).property("ADBE Position").setValue([CFG.width/2,CFG.height/2]);
-        }
+        addBackground(main, backgroundFile, assets);
         var feedComp = cropped("FEED_KEYLIGHT_AND_MARKS", screenshot, CFG.feed, precomps);
         addHighlights(feedComp, CFG.feed.crop);
         var feed = place3D(main, feedComp, CFG.feed, "FEED_3D_SCROLL");
@@ -308,6 +358,8 @@
             place3D(main, profileComp, CFG.profile, "PROFILE_3D");
         }
         addCamera(main);
+        // This 2D adjustment layer is above all 3D scene layers, including the background.
+        addSceneBlur(main, assets);
         main.comment = "Built from a measured shot.jsxinc using telegram-ae. Generation alone does not confirm AE execution or render review.";
         main.markerProperty.setValueAtTime(CFG.feed.scrollEnd, new MarkerValue("SCROLL_END"));
         if (HIGHLIGHTS.length === 0) {
