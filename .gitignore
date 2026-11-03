@@ -1,0 +1,16 @@
+# Per-shot sources and generated projects remain local by default.
+shots/
+.local/
+renders/
+*.aep
+*.aepx
+*.aepx~
+*.zip
+*.mp4
+*.mov
+template/shot.jsxinc
+template/assets/feed_green.png
+template/assets/background.png
+template/assets/background.jpg
+template/assets/background.jpeg
+

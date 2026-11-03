@@ -1,0 +1,41 @@
+﻿/* Example coordinates from the first screenshot, NOT a mapping for a new shot.
+   Prepare shot.jsxinc with mappingStatus: measured and the user-selected rows. */
+(function () {
+    var settings = {
+        name: "TELEGRAM_3D_KEYLIGHT_V1",
+        width: 1920, height: 1080, fps: 25, duration: 6,
+        screenshot: "assets/feed_green.png", background: "assets/telegram_background.png",
+        expectedWidth: 3840, expectedHeight: 5760,
+        screenColour: [0, 1, 0, 1],
+        feed: {
+            crop: [660, 0, 1500, 5760], width: 900,
+            center: [670, 540, 0],
+            startFocusY: 620, endFocusY: 2735,
+            scrollStart: 0, scrollEnd: 2.8,
+            // Original screenshot coordinates; inset protects opaque interiors.
+            protect: [
+                [834, 0, 1290, 108, 40],
+                [834, 146, 1290, 651, 40],
+                [834, 835, 1290, 1533, 40],
+                [834, 2406, 1290, 2037, 40],
+                [834, 4481, 1290, 210, 40],
+                [834, 4729, 1290, 1031, 40]
+            ]
+        },
+        profile: {
+            enabled: true, crop: [2190, 2100, 990, 1050], width: 560,
+            center: [1410, 514, 65],
+            protect: [[2228, 2150, 908, 946, 40]]
+        },
+        camera: {
+            zoom: 2600, startMagnification: 0.96, endMagnification: 1.04,
+            startRotation: [1.1, -2.5, -0.3], endRotation: [0, 0.8, 0],
+            depthOfField: false, aperture: 6, blurLevel: 50
+        },
+        shadow: {enabled: true, opacity: 14, distance: 5, softness: 18},
+        motionBlur: true
+    };
+
+    settings.mappingStatus = "example";
+    return {settings: settings, highlights: []};
+}());
