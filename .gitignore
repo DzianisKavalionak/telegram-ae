@@ -1,6 +1,7 @@
 # Per-shot sources and generated projects remain local by default.
 shots/
 .local/
+**/.render/
 renders/
 *.aep
 *.aepx

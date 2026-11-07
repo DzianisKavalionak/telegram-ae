@@ -1,22 +1,27 @@
 ﻿#target aftereffects
 /* ExtendScript ES3. Reusable Telegram scene builder.
    Reads a prepared shot.jsxinc next to this script.
-   No automatic save, render, project close or application launch. */
+   Interactive build, or isolated background automation via Prepare_Project.jsx. */
 (function () {
+    var unattended = $.global.TELEGRAM_AE_AUTOMATION === true;
+    function reportError(message) {
+        if (unattended) { throw new Error(message); }
+        alert(message);
+    }
     var base = new File($.fileName).parent;
     var configFile = new File(base.fsName + "/shot.jsxinc");
     if (!configFile.exists) {
-        alert("Не найден shot.jsxinc. Нужна разметка конкретного скриншота по правилам репозитория.");
+        reportError("Не найден shot.jsxinc. Нужна разметка конкретного скриншота по правилам репозитория.");
         return;
     }
     var shot;
     try { shot = $.evalFile(configFile); }
-    catch (configError) { alert("Ошибка чтения shot.jsxinc: " + configError.toString()); return; }
-    if (!shot || !shot.settings) { alert("shot.jsxinc должен вернуть settings и highlights."); return; }
+    catch (configError) { reportError("Ошибка чтения shot.jsxinc: " + configError.toString()); return; }
+    if (!shot || !shot.settings) { reportError("shot.jsxinc должен вернуть settings и highlights."); return; }
     var CFG = shot.settings;
     var HIGHLIGHTS = shot.highlights || [];
     if (CFG.mappingStatus !== "measured") {
-        alert("Это пример конфигурации. Сначала разметьте новый скриншот и подготовьте shot.jsxinc со статусом measured.");
+        reportError("Это пример конфигурации. Сначала разметьте новый скриншот и подготовьте shot.jsxinc со статусом measured.");
         return;
     }
 
@@ -321,9 +326,9 @@
     }
 
     var screenshotFile = fileAt(CFG.screenshot);
-    if (!screenshotFile.exists) { alert("Не найден assets/feed_green.png. Распакуйте пакет полностью."); return; }
+    if (!screenshotFile.exists) { reportError("Не найден assets/feed_green.png. Распакуйте пакет полностью."); return; }
     var backgroundFile = fileAt(CFG.background || "assets/telegram_background.png");
-    if (!backgroundFile.exists) { alert("Не найден постоянный фон assets/telegram_background.png. Скопируйте его из шаблона репозитория вместе с пакетом."); return; }
+    if (!backgroundFile.exists) { reportError("Не найден постоянный фон assets/telegram_background.png. Скопируйте его из шаблона репозитория вместе с пакетом."); return; }
 
     app.beginUndoGroup("Build Telegram 3D Keylight");
     try {
@@ -366,9 +371,10 @@
             main.markerProperty.setValueAtTime(3, new MarkerValue("NO_HIGHLIGHTS_CONFIGURED"));
         }
         main.workAreaStart = 0; main.workAreaDuration = CFG.duration; main.time = 0;
-        main.openInViewer();
+        if (unattended) { $.global.TELEGRAM_AE_RESULT = {main: main, root: root}; }
+        else { main.openInViewer(); }
     } catch (error) {
-        alert("Не удалось завершить сборку.\n" + error.toString() + "\nСтрока: " + error.line +
+        reportError("Не удалось завершить сборку.\n" + error.toString() + "\nСтрока: " + error.line +
             "\nСозданные элементы можно отменить одной операцией Undo.");
     } finally { app.endUndoGroup(); }
 }());
