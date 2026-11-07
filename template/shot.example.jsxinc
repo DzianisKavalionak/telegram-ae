@@ -3,13 +3,13 @@
 (function () {
     var settings = {
         name: "TELEGRAM_3D_KEYLIGHT_V3",
-        width: 1920, height: 1080, fps: 25, duration: 6,
+        width: 3840, height: 2160, fps: 25, duration: 6,
         screenshot: "assets/feed_green.png", background: "assets/telegram_background.png",
         expectedWidth: 3840, expectedHeight: 5760,
         screenColour: [0, 1, 0, 1],
         feed: {
-            crop: [660, 0, 1500, 5760], width: 900,
-            center: [670, 540, 0],
+            crop: [660, 0, 1500, 5760], width: 1800,
+            center: [1340, 1080, 0],
             startFocusY: 620, endFocusY: 2735,
             scrollStart: 0, scrollEnd: 2.8,
             // Original screenshot coordinates; inset protects opaque interiors.
@@ -23,17 +23,17 @@
             ]
         },
         profile: {
-            enabled: true, crop: [2190, 2100, 990, 1050], width: 560,
-            center: [1410, 514, 65],
+            enabled: true, crop: [2190, 2100, 990, 1050], width: 1120,
+            center: [2820, 1028, 130],
             protect: [[2228, 2150, 908, 946, 40]]
         },
         camera: {
-            zoom: 2600, startMagnification: 0.96, endMagnification: 1.04,
+            zoom: 5200, startMagnification: 0.96, endMagnification: 1.04,
             startRotation: [1.1, -2.5, -0.3], endRotation: [0, 0.8, 0],
-            depthOfField: false, aperture: 6, blurLevel: 50
+            depthOfField: false, aperture: 12, blurLevel: 50
         },
         background3D: {
-            depth: 500, overscan: 1.25,
+            depth: 1000, overscan: 1.25,
             startRotation: [0.5, -1.0, -0.6], endRotation: [-0.5, 1.0, 0.6]
         },
         sceneBlur: {enabled: true, radius: 4, holdUntil: 1.9, clearAt: 2.8},
