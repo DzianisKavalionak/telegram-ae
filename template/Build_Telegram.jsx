@@ -363,6 +363,25 @@
             place3D(main, profileComp, CFG.profile, "PROFILE_3D");
         }
         addCamera(main);
+        var voiceMeta = null;
+        if (CFG.audio && CFG.audio.file) {
+            var voice = CFG.audio;
+            if (typeof voice.startFrame !== "number" || voice.startFrame < 0 ||
+                Math.floor(voice.startFrame) !== voice.startFrame || typeof voice.duration !== "number" ||
+                voice.duration <= 0 || voice.startFrame / CFG.fps + voice.duration + 1 > CFG.duration + 0.00001) {
+                fail("Неверная длительность начитки или недостаточно места для секунды паузы.");
+            }
+            var voiceFile = fileAt(voice.file);
+            if (!voiceFile.exists) { fail("Не найден файл начитки: " + voice.file); }
+            var voiceSource = app.project.importFile(new ImportOptions(voiceFile));
+            if (!voiceSource.hasAudio) { fail("В файле начитки нет звуковой дорожки."); }
+            voiceSource.parentFolder = assets;
+            var voiceLayer = main.layers.add(voiceSource);
+            voiceLayer.name = "VOICEOVER_START_FRAME_" + voice.startFrame;
+            voiceLayer.startTime = voice.startFrame / CFG.fps;
+            voiceLayer.outPoint = voiceLayer.startTime + voice.duration;
+            voiceMeta = {file:voiceFile.fsName, startFrame:voice.startFrame, duration:voice.duration};
+        }
         // This 2D adjustment layer is above all 3D scene layers, including the background.
         addSceneBlur(main, assets);
         main.comment = "Built from a measured shot.jsxinc using telegram-ae. Generation alone does not confirm AE execution or render review.";
@@ -371,7 +390,7 @@
             main.markerProperty.setValueAtTime(3, new MarkerValue("NO_HIGHLIGHTS_CONFIGURED"));
         }
         main.workAreaStart = 0; main.workAreaDuration = CFG.duration; main.time = 0;
-        if (unattended) { $.global.TELEGRAM_AE_RESULT = {main: main, root: root}; }
+        if (unattended) { $.global.TELEGRAM_AE_RESULT = {main: main, root: root, audio: voiceMeta}; }
         else { main.openInViewer(); }
     } catch (error) {
         reportError("Не удалось завершить сборку.\n" + error.toString() + "\nСтрока: " + error.line +

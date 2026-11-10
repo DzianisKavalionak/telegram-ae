@@ -4,6 +4,8 @@
     var settings = {
         name: "TELEGRAM_3D_KEYLIGHT_V3",
         width: 3840, height: 2160, fps: 25, duration: 6,
+        // Optional voiceover: measure decoded duration first, choose total duration accordingly.
+        // audio: {file: "assets/voiceover.mp3", startFrame: 15, duration: 8},
         screenshot: "assets/feed_green.png", background: "assets/telegram_background.png",
         expectedWidth: 3840, expectedHeight: 5760,
         screenColour: [0, 1, 0, 1],

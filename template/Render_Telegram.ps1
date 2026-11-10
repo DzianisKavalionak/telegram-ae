@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$ProjectRoot = $PSScriptRoot,
     [string]$AfterEffectsDirectory,
     [switch]$Resume,
@@ -112,7 +112,20 @@ try {
     $renderExit = Wait-Worker $render $RenderTimeoutSeconds 'Фоновый рендер'
     if ($renderExit -ne 0 -or -not (Test-Path -LiteralPath $job.intermediatePath)) { throw ('aerender завершился с кодом '+$renderExit+'. Проверьте журнал в .render.') }
     Save-State 'encoding' @{video=$video}
-    & $ffmpeg -hide_banner -loglevel error -nostdin -i $job.intermediatePath -an -c:v libx264 -preset medium -crf 17 -pix_fmt yuv420p -movflags +faststart $video
+    if ($build.audio) {
+        $voicePath = [string]$build.audio.file
+        if (-not (Test-Path -LiteralPath $voicePath)) { throw 'Не найден источник начитки для MP4.' }
+        $voiceDuration = [double]$build.audio.duration
+        $voiceFrame = [int]$build.audio.startFrame
+        $offsetSamples = [long][Math]::Round(48000.0 * $voiceFrame / [double]$build.fps)
+        if ($voiceFrame -lt 0 -or $voiceDuration -le 0 -or ($voiceFrame / [double]$build.fps + $voiceDuration + 1 -gt [double]$build.duration + 0.00001)) { throw 'Неверный тайминг начитки или паузы.' }
+        $durationText = $voiceDuration.ToString([Globalization.CultureInfo]::InvariantCulture)
+        $totalText = ([double]$build.duration).ToString([Globalization.CultureInfo]::InvariantCulture)
+        $voiceFilter = "aresample=48000,atrim=duration=$durationText,asetpts=PTS-STARTPTS,adelay=${offsetSamples}S:all=1,apad"
+        & $ffmpeg -hide_banner -loglevel error -nostdin -i $job.intermediatePath -i $voicePath -map 0:v:0 -map 1:a:0 -af $voiceFilter -t $totalText -c:v libx264 -preset medium -crf 17 -pix_fmt yuv420p -c:a aac -b:a 192k -movflags +faststart $video
+    } else {
+        & $ffmpeg -hide_banner -loglevel error -nostdin -i $job.intermediatePath -an -c:v libx264 -preset medium -crf 17 -pix_fmt yuv420p -movflags +faststart $video
+    }
     if ($LASTEXITCODE -ne 0) { throw 'Не удалось подготовить MP4.' }
     $probeText = & $ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=width,height,r_frame_rate,nb_read_frames,duration -of json $video
     if ($LASTEXITCODE -ne 0) { throw 'Не удалось проверить готовый MP4.' }
@@ -120,7 +133,12 @@ try {
     $rateParts = $stream.r_frame_rate -split '/'
     $actualFps = [double]$rateParts[0] / [double]$rateParts[1]
     if ($stream.width -ne $build.width -or $stream.height -ne $build.height -or [int]$stream.nb_read_frames -ne [int]$build.frames -or [Math]::Abs($actualFps-[double]$build.fps) -gt 0.0001 -or [Math]::Abs([double]$stream.duration-[double]$build.duration) -gt 0.05) { throw 'MP4 не совпадает с параметрами композиции.' }
+    if ($build.audio) {
+        $audioProbe = & $ffprobe -v error -select_streams a:0 -show_entries stream=codec_type,duration -of json $video
+        if ($LASTEXITCODE -ne 0 -or -not (($audioProbe | ConvertFrom-Json).streams | Where-Object { $_.codec_type -eq 'audio' })) { throw 'В готовом MP4 не найдена звуковая дорожка.' }
+    }
     $report = @("After Effects: $($build.aeVersion)","Composition: $($build.comp)","Video: $($stream.width) x $($stream.height), $($build.fps) fps, $($stream.duration) s, $($stream.nb_read_frames) frames",'Codec: H.264 / yuv420p / CRF 17','Native AEP saved and rendered with aerender.','Technical check: frame count, dimensions and duration match the native composition.','Visual inspection is performed separately.')
+    if ($build.audio) { $report += ("Voiceover starts at frame $($build.audio.startFrame); source duration $($build.audio.duration) s; at least one second of silence follows.") }
     [IO.File]::WriteAllLines((Join-Path $root 'Render_Report.txt'),$report,[Text.UTF8Encoding]::new($false))
     Save-State 'packaging' @{video=$video;project=$project}
     Add-Type -AssemblyName System.IO.Compression.FileSystem

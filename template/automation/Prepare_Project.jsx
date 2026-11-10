@@ -1,4 +1,4 @@
-#target aftereffects
+﻿#target aftereffects
 /* Run only in the dedicated AfterFX process launched by Render_Telegram.ps1. */
 (function () {
     $.writeln('TELEGRAM_AE_WORKER_STARTED');
@@ -77,7 +77,7 @@
         write(job.resultPath, {
             status: 'ready', aeVersion: String(app.version), project: job.projectPath,
             comp: main.name, width: main.width, height: main.height,
-            fps: main.frameRate, duration: main.duration,
+            fps: main.frameRate, duration: main.duration, audio: result.audio || null,
             frames: Math.round(main.duration * main.frameRate), rqIndex: app.project.renderQueue.numItems,
             outputTemplate: selected, outputFormat: outputSettings.Format,
             availableOutputTemplates: templates
