@@ -107,10 +107,20 @@ try {
     if ($build.status -ne 'ready' -or -not (Test-Path -LiteralPath $project)) { throw ('Ошибка сборки AE: '+$build.error+'; строка '+$build.line) }
     }
     Save-State 'rendering' @{project=$project;frames=$build.frames;comp=$build.comp}
-    $renderArgs = @('-project',('"'+$project+'"'),'-comp',('"'+$build.comp+'"'),'-output',('"'+$job.intermediatePath+'"'),'-mfr','ON',[string]$CpuPercent,'-mem_usage','10','60','-sound','OFF')
+    if (-not ($build.availableOutputTemplates -contains 'TIFF Sequence with Alpha')) { throw 'В AE не найден шаблон TIFF Sequence with Alpha для надёжного рендера кадров.' }
+    $sequenceDir = Join-Path $stateDir 'frames'
+    New-Item -ItemType Directory -Path $sequenceDir -ErrorAction Stop | Out-Null
+    $aePattern = Join-Path $sequenceDir 'frame_[#####].tif'
+    $ffPattern = Join-Path $sequenceDir 'frame_%05d.tif'
+    $renderArgs = @('-project',('"'+$project+'"'),'-comp',('"'+$build.comp+'"'),'-OMtemplate','"TIFF Sequence with Alpha"','-output',('"'+$aePattern+'"'),'-mfr','ON',[string]$CpuPercent,'-mem_usage','10','60','-sound','OFF')
     $render = Start-Process -FilePath $aerender -ArgumentList $renderArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $stateDir 'aerender.stdout.log') -RedirectStandardError (Join-Path $stateDir 'aerender.stderr.log')
     $renderExit = Wait-Worker $render $RenderTimeoutSeconds 'Фоновый рендер'
-    if ($renderExit -ne 0 -or -not (Test-Path -LiteralPath $job.intermediatePath)) { throw ('aerender завершился с кодом '+$renderExit+'. Проверьте журнал в .render.') }
+    if ($renderExit -ne 0) { throw ('aerender завершился с кодом '+$renderExit+'. Проверьте журнал в .render.') }
+    for ($frame = 0; $frame -lt [int]$build.frames; $frame++) {
+        $framePath = Join-Path $sequenceDir ('frame_{0:D5}.tif' -f $frame)
+        if (-not (Test-Path -LiteralPath $framePath) -or (Get-Item -LiteralPath $framePath).Length -eq 0) { throw ('Отсутствует кадр рендера: '+$framePath) }
+    }
+    $sequenceRate = ([double]$build.fps).ToString([Globalization.CultureInfo]::InvariantCulture)
     Save-State 'encoding' @{video=$video}
     if ($build.audio) {
         $voicePath = [string]$build.audio.file
@@ -122,9 +132,9 @@ try {
         $durationText = $voiceDuration.ToString([Globalization.CultureInfo]::InvariantCulture)
         $totalText = ([double]$build.duration).ToString([Globalization.CultureInfo]::InvariantCulture)
         $voiceFilter = "aresample=48000,atrim=duration=$durationText,asetpts=PTS-STARTPTS,adelay=${offsetSamples}S:all=1,apad"
-        & $ffmpeg -hide_banner -loglevel error -nostdin -i $job.intermediatePath -i $voicePath -map 0:v:0 -map 1:a:0 -af $voiceFilter -t $totalText -c:v libx264 -preset medium -crf 17 -pix_fmt yuv420p -c:a aac -b:a 192k -movflags +faststart $video
+        & $ffmpeg -hide_banner -loglevel error -nostdin -framerate $sequenceRate -start_number 0 -i $ffPattern -i $voicePath -map 0:v:0 -map 1:a:0 -af $voiceFilter -t $totalText -c:v libx264 -preset medium -crf 17 -pix_fmt yuv420p -c:a aac -b:a 192k -movflags +faststart $video
     } else {
-        & $ffmpeg -hide_banner -loglevel error -nostdin -i $job.intermediatePath -an -c:v libx264 -preset medium -crf 17 -pix_fmt yuv420p -movflags +faststart $video
+        & $ffmpeg -hide_banner -loglevel error -nostdin -framerate $sequenceRate -start_number 0 -i $ffPattern -an -c:v libx264 -preset medium -crf 17 -pix_fmt yuv420p -movflags +faststart $video
     }
     if ($LASTEXITCODE -ne 0) { throw 'Не удалось подготовить MP4.' }
     $probeText = & $ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=width,height,r_frame_rate,nb_read_frames,duration -of json $video
@@ -154,8 +164,10 @@ try {
         }
     } finally { $zip.Dispose() }
     Save-State 'complete' @{video=$video;project=$project;archive=$archive;width=$build.width;height=$build.height;fps=$build.fps;duration=$build.duration;frames=$build.frames}
-    # Keep logs and native project; discard only this job's verified intermediate.
-    Remove-Item -LiteralPath $job.intermediatePath
+    # Keep logs and native project; discard only this job's verified frame files.
+    for ($frame = 0; $frame -lt [int]$build.frames; $frame++) {
+        Remove-Item -LiteralPath (Join-Path $sequenceDir ('frame_{0:D5}.tif' -f $frame))
+    }
     Write-Output ([ordered]@{video=$video;project=$project;archive=$archive}|ConvertTo-Json -Compress)
 } catch {
     Save-State 'failed' @{error=$_.Exception.Message}
