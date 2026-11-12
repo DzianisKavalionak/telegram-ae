@@ -352,12 +352,18 @@
         addBackground(main, backgroundFile, assets);
         var feedComp = cropped("FEED_KEYLIGHT_AND_MARKS", screenshot, CFG.feed, precomps);
         addHighlights(feedComp, CFG.feed.crop);
-        var feed = place3D(main, feedComp, CFG.feed, "FEED_3D_SCROLL");
+        var feed = place3D(main, feedComp, CFG.feed, CFG.feed.scrollEnabled === false ? "POST_3D_STATIC" : "FEED_3D_SCROLL");
         tr(feed).property("ADBE Anchor Point").setValue([feedComp.width/2,0,0]);
         var factor = CFG.feed.width/feedComp.width;
-        animate(tr(feed).property("ADBE Position"), CFG.feed.scrollStart, CFG.feed.scrollEnd,
-            [CFG.feed.center[0],CFG.feed.center[1]-CFG.feed.startFocusY*factor,CFG.feed.center[2]],
-            [CFG.feed.center[0],CFG.feed.center[1]-CFG.feed.endFocusY*factor,CFG.feed.center[2]],true);
+        var feedPosition = tr(feed).property("ADBE Position");
+        var targetPosition = [CFG.feed.center[0],CFG.feed.center[1]-CFG.feed.endFocusY*factor,CFG.feed.center[2]];
+        if (CFG.feed.scrollEnabled === false) {
+            feedPosition.setValue(targetPosition);
+        } else {
+            animate(feedPosition, CFG.feed.scrollStart, CFG.feed.scrollEnd,
+                [CFG.feed.center[0],CFG.feed.center[1]-CFG.feed.startFocusY*factor,CFG.feed.center[2]],
+                targetPosition,true);
+        }
         if (CFG.profile.enabled) {
             var profileComp = cropped("PROFILE_KEYLIGHT", screenshot, CFG.profile, precomps);
             place3D(main, profileComp, CFG.profile, "PROFILE_3D");
@@ -385,7 +391,11 @@
         // This 2D adjustment layer is above all 3D scene layers, including the background.
         addSceneBlur(main, assets);
         main.comment = "Built from a measured shot.jsxinc using telegram-ae. Generation alone does not confirm AE execution or render review.";
-        main.markerProperty.setValueAtTime(CFG.feed.scrollEnd, new MarkerValue("SCROLL_END"));
+        if (CFG.feed.scrollEnabled === false) {
+            main.markerProperty.setValueAtTime(0, new MarkerValue("STATIC_POST_NO_SCROLL"));
+        } else {
+            main.markerProperty.setValueAtTime(CFG.feed.scrollEnd, new MarkerValue("SCROLL_END"));
+        }
         if (HIGHLIGHTS.length === 0) {
             main.markerProperty.setValueAtTime(3, new MarkerValue("NO_HIGHLIGHTS_CONFIGURED"));
         }

@@ -10,6 +10,8 @@
         expectedWidth: 3840, expectedHeight: 5760,
         screenColour: [0, 1, 0, 1],
         feed: {
+            // Для одиночной карточки: scrollEnabled: false, а при отсутствии профиля profile.enabled: false.
+            // endFocusY задаёт постоянную точку кадрирования; sceneBlur.clearAt задаётся отдельно.
             crop: [660, 0, 1500, 5760], width: 1800,
             center: [1340, 1080, 0],
             startFocusY: 620, endFocusY: 2735,
