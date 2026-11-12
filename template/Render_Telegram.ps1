@@ -2,6 +2,7 @@ param(
     [string]$ProjectRoot = $PSScriptRoot,
     [string]$AfterEffectsDirectory,
     [switch]$Resume,
+    [switch]$DisableResident,
     [ValidateRange(1,100)][int]$CpuPercent = 70,
     [int]$BuildTimeoutSeconds = 300,
     [int]$RenderTimeoutSeconds = 1800
@@ -69,7 +70,18 @@ try {
         intermediatePath=(Join-Path $stateDir 'master.avi');resultPath=(Join-Path $stateDir 'build.json')
         outputTemplate='Lossless'
     }
-    if ($Resume) {
+    $residentMode = (-not $Resume -and -not $DisableResident)
+    if ($residentMode) {
+        $sequenceDir = Join-Path $stateDir 'frames'
+        New-Item -ItemType Directory -Path $sequenceDir -ErrorAction Stop | Out-Null
+        $aePattern = Join-Path $sequenceDir 'frame_[#####].tif'
+        $helper = Join-Path $root 'automation\Invoke_Resident.ps1'
+        if (-not (Test-Path -LiteralPath $helper)) { throw 'Не найден automation/Invoke_Resident.ps1.' }
+        Save-State 'resident' @{project=$project}
+        & $helper -AfterEffectsPath $afterfx -BuilderPath $job.builderPath -ProjectPath $project -OutputPattern $aePattern -ResultPath $job.resultPath -JobStatusPath (Join-Path $stateDir 'resident_job.json') -CpuPercent $CpuPercent -TimeoutSeconds ($BuildTimeoutSeconds+$RenderTimeoutSeconds)
+        $build = Get-Content -LiteralPath $job.resultPath -Raw | ConvertFrom-Json
+        if ($build.status -ne 'ready' -or -not (Test-Path -LiteralPath $project)) { throw 'Фоновый AE не сохранил проект.' }
+    } elseif ($Resume) {
         if (-not (Test-Path -LiteralPath $project)) { throw 'Для продолжения нужен ранее сохранённый AEP.' }
         $savedResult = $null
         foreach ($candidateResult in (Get-ChildItem -LiteralPath $stateBase -Filter 'build.json' -Recurse -File | Sort-Object LastWriteTimeUtc -Descending)) {
@@ -106,16 +118,18 @@ try {
     $build = Get-Content -LiteralPath $job.resultPath -Raw | ConvertFrom-Json
     if ($build.status -ne 'ready' -or -not (Test-Path -LiteralPath $project)) { throw ('Ошибка сборки AE: '+$build.error+'; строка '+$build.line) }
     }
-    Save-State 'rendering' @{project=$project;frames=$build.frames;comp=$build.comp}
+    if ($residentMode) { Save-State 'checking_frames' @{project=$project;frames=$build.frames;comp=$build.comp} } else { Save-State 'rendering' @{project=$project;frames=$build.frames;comp=$build.comp} }
     if (-not ($build.availableOutputTemplates -contains 'TIFF Sequence with Alpha')) { throw 'В AE не найден шаблон TIFF Sequence with Alpha для надёжного рендера кадров.' }
     $sequenceDir = Join-Path $stateDir 'frames'
-    New-Item -ItemType Directory -Path $sequenceDir -ErrorAction Stop | Out-Null
-    $aePattern = Join-Path $sequenceDir 'frame_[#####].tif'
     $ffPattern = Join-Path $sequenceDir 'frame_%05d.tif'
-    $renderArgs = @('-project',('"'+$project+'"'),'-comp',('"'+$build.comp+'"'),'-OMtemplate','"TIFF Sequence with Alpha"','-output',('"'+$aePattern+'"'),'-mfr','ON',[string]$CpuPercent,'-mem_usage','10','60','-sound','OFF')
-    $render = Start-Process -FilePath $aerender -ArgumentList $renderArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $stateDir 'aerender.stdout.log') -RedirectStandardError (Join-Path $stateDir 'aerender.stderr.log')
-    $renderExit = Wait-Worker $render $RenderTimeoutSeconds 'Фоновый рендер'
-    if ($renderExit -ne 0) { throw ('aerender завершился с кодом '+$renderExit+'. Проверьте журнал в .render.') }
+    if (-not $residentMode) {
+        New-Item -ItemType Directory -Path $sequenceDir -ErrorAction Stop | Out-Null
+        $aePattern = Join-Path $sequenceDir 'frame_[#####].tif'
+        $renderArgs = @('-project',('"'+$project+'"'),'-comp',('"'+$build.comp+'"'),'-OMtemplate','"TIFF Sequence with Alpha"','-output',('"'+$aePattern+'"'),'-mfr','ON',[string]$CpuPercent,'-mem_usage','10','60','-sound','OFF')
+        $render = Start-Process -FilePath $aerender -ArgumentList $renderArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $stateDir 'aerender.stdout.log') -RedirectStandardError (Join-Path $stateDir 'aerender.stderr.log')
+        $renderExit = Wait-Worker $render $RenderTimeoutSeconds 'Фоновый рендер'
+        if ($renderExit -ne 0) { throw ('aerender завершился с кодом '+$renderExit+'. Проверьте журнал в .render.') }
+    }
     for ($frame = 0; $frame -lt [int]$build.frames; $frame++) {
         $framePath = Join-Path $sequenceDir ('frame_{0:D5}.tif' -f $frame)
         if (-not (Test-Path -LiteralPath $framePath) -or (Get-Item -LiteralPath $framePath).Length -eq 0) { throw ('Отсутствует кадр рендера: '+$framePath) }
@@ -147,14 +161,14 @@ try {
         $audioProbe = & $ffprobe -v error -select_streams a:0 -show_entries stream=codec_type,duration -of json $video
         if ($LASTEXITCODE -ne 0 -or -not (($audioProbe | ConvertFrom-Json).streams | Where-Object { $_.codec_type -eq 'audio' })) { throw 'В готовом MP4 не найдена звуковая дорожка.' }
     }
-    $report = @("After Effects: $($build.aeVersion)","Composition: $($build.comp)","Video: $($stream.width) x $($stream.height), $($build.fps) fps, $($stream.duration) s, $($stream.nb_read_frames) frames",'Codec: H.264 / yuv420p / CRF 17','Native AEP saved and rendered with aerender.','Technical check: frame count, dimensions and duration match the native composition.','Visual inspection is performed separately.')
+    $report = @("After Effects: $($build.aeVersion)","Composition: $($build.comp)","Video: $($stream.width) x $($stream.height), $($build.fps) fps, $($stream.duration) s, $($stream.nb_read_frames) frames",'Codec: H.264 / yuv420p / CRF 17','Native AEP saved and rendered with After Effects.','Technical check: frame count, dimensions and duration match the native composition.','Visual inspection is performed separately.')
     if ($build.audio) { $report += ("Voiceover starts at frame $($build.audio.startFrame); source duration $($build.audio.duration) s; at least one second of silence follows.") }
     [IO.File]::WriteAllLines((Join-Path $root 'Render_Report.txt'),$report,[Text.UTF8Encoding]::new($false))
     Save-State 'packaging' @{video=$video;project=$project}
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zip = [IO.Compression.ZipFile]::Open($archive,[IO.Compression.ZipArchiveMode]::Create)
     try {
-        $files = @('Build_Telegram.jsx','shot.jsxinc','README.txt','Render_Report.txt','Render_Telegram.ps1','automation\Prepare_Project.jsx',($name+'.aep'))
+        $files = @('Build_Telegram.jsx','shot.jsxinc','README.txt','Render_Report.txt','Render_Telegram.ps1','automation\Prepare_Project.jsx','automation\Invoke_Resident.ps1','automation\ResidentWorker.jsx',($name+'.aep'))
         $files += Get-ChildItem -LiteralPath (Join-Path $root 'assets') -File | ForEach-Object { 'assets\'+$_.Name }
         foreach ($relative in $files) {
             $file = Join-Path $root $relative
