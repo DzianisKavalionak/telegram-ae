@@ -286,50 +286,46 @@
         fx.property("ADBE Drop Shadow-0004").setValue(CFG.shadow.distance);
         fx.property("ADBE Drop Shadow-0005").setValue(CFG.shadow.softness);
     }
-    function place3D(main, source, part, name) {
-        var layer = main.layers.add(source);
+    function placeCard(scene, source, part, name) {
+        var layer = scene.layers.add(source);
         layer.name = name;
-        layer.threeDLayer = true;
         layer.motionBlur = CFG.motionBlur;
         var factor = part.width / source.width;
-        tr(layer).property("ADBE Scale").setValue([factor*100,factor*100,factor*100]);
-        tr(layer).property("ADBE Position").setValue(part.center);
+        var offsetX = (scene.width-CFG.width)/2;
+        var offsetY = (scene.height-CFG.height)/2;
+        tr(layer).property("ADBE Scale").setValue([factor*100,factor*100]);
+        tr(layer).property("ADBE Position").setValue([part.center[0]+offsetX,part.center[1]+offsetY]);
         addShadow(layer);
         return layer;
     }
-    function addBackground(main, file, assets) {
-        var config = CFG.background3D || {};
-        var depth = typeof config.depth === "number" ? config.depth : 500;
-        var overscan = typeof config.overscan === "number" ? config.overscan : 1.25;
-        var firstRotation = config.startRotation || [0.5, -1.0, -0.6];
-        var lastRotation = config.endRotation || [-0.5, 1.0, 0.6];
-        var frontDepth = CFG.feed.center[2];
-        if (CFG.profile.enabled) { frontDepth = Math.max(frontDepth, CFG.profile.center[2]); }
-        if (depth <= frontDepth || overscan < 1 || CFG.camera.zoom <= 0 ||
-            CFG.camera.startMagnification <= 0 || CFG.camera.endMagnification <= 0) {
-            fail("Неверные параметры 3D-фона: он должен быть позади карточек и иметь запас масштаба.");
+    function addScenePlane(main, file, assets, precomps) {
+        var overscan = CFG.sceneOverscan;
+        if (typeof overscan !== "number") {
+            var legacyOverscan = (CFG.background3D || {}).overscan;
+            overscan = typeof legacyOverscan === "number" ? legacyOverscan : 1.25;
         }
+        var minimumMagnification = Math.min(CFG.camera.startMagnification, CFG.camera.endMagnification);
+        if (!isFinite(overscan) || overscan < 1 || !(CFG.camera.zoom > 0) || !(minimumMagnification > 0)) {
+            fail("Неверный запас размера общей плоскости или масштаб камеры.");
+        }
+        var size = Math.max(1, 1/minimumMagnification)*overscan;
+        var scene = app.project.items.addComp("TELEGRAM_SHARED_PLANE", Math.ceil(CFG.width*size),
+            Math.ceil(CFG.height*size), 1, CFG.duration, CFG.fps);
+        scene.parentFolder = precomps;
+        scene.motionBlur = CFG.motionBlur;
+        scene.shutterAngle = main.shutterAngle;
         var source = importImage(file, assets);
-        var layer = main.layers.add(source);
-        layer.name = "BACKGROUND_3D_ROTATION";
-        layer.threeDLayer = true;
-        layer.motionBlur = CFG.motionBlur;
-        layer.outPoint = CFG.duration;
-        var transform = tr(layer);
-        requiredProperty(transform, "ADBE Position").setValue([CFG.width/2, CFG.height/2, depth]);
-        var cover = Math.max(CFG.width/source.width, CFG.height/source.height);
-        var farthestCamera = Math.max(CFG.camera.zoom/CFG.camera.startMagnification,
-            CFG.camera.zoom/CFG.camera.endMagnification);
-        // Compensate for background depth, then enlarge for camera/plane rotations.
-        var scale = 100 * cover * (farthestCamera + depth) / CFG.camera.zoom * overscan;
-        requiredProperty(transform, "ADBE Scale").setValue([scale,scale,scale]);
-        var names = ["ADBE Rotate X", "ADBE Rotate Y", "ADBE Rotate Z"], i;
-        for (i = 0; i < names.length; i++) {
-            animate(requiredProperty(transform, names[i]), 0, CFG.duration,
-                firstRotation[i], lastRotation[i], true);
-        }
-        layer.comment = "Shared 3D background behind the cards. Scale covers the farthest camera distance plus rotation overscan.";
-        return layer;
+        var background = scene.layers.add(source);
+        background.name = "TELEGRAM_BACKGROUND";
+        var cover = 100*Math.max(scene.width/source.width, scene.height/source.height);
+        requiredProperty(tr(background), "ADBE Scale").setValue([cover,cover]);
+        var plane = main.layers.add(scene);
+        plane.name = "TELEGRAM_SHARED_3D_PLANE";
+        plane.threeDLayer = true;
+        plane.motionBlur = CFG.motionBlur;
+        plane.collapseTransformation = false;
+        plane.comment = "Background, feed and profile share one plane. Scroll is animated inside the precomp.";
+        return scene;
     }
     function addSceneBlur(main, assets) {
         var config = CFG.sceneBlur || {};
@@ -408,24 +404,25 @@
         }
         main.motionBlur = CFG.motionBlur;
         main.shutterAngle = 180;
-        addBackground(main, backgroundFile, assets);
+        var scene = addScenePlane(main, backgroundFile, assets, precomps);
         var feedComp = cropped("FEED_KEYLIGHT_AND_MARKS", screenshot, CFG.feed, precomps);
         addHighlights(feedComp, CFG.feed.crop);
-        var feed = place3D(main, feedComp, CFG.feed, CFG.feed.scrollEnabled === false ? "POST_3D_STATIC" : "FEED_3D_SCROLL");
-        tr(feed).property("ADBE Anchor Point").setValue([feedComp.width/2,0,0]);
+        var feed = placeCard(scene, feedComp, CFG.feed, CFG.feed.scrollEnabled === false ? "POST_STATIC" : "FEED_SCROLL");
+        tr(feed).property("ADBE Anchor Point").setValue([feedComp.width/2,0]);
         var factor = CFG.feed.width/feedComp.width;
         var feedPosition = tr(feed).property("ADBE Position");
-        var targetPosition = [CFG.feed.center[0],CFG.feed.center[1]-CFG.feed.endFocusY*factor,CFG.feed.center[2]];
+        var center = feedPosition.value;
+        var targetPosition = [center[0],center[1]-CFG.feed.endFocusY*factor];
         if (CFG.feed.scrollEnabled === false) {
             feedPosition.setValue(targetPosition);
         } else {
             animate(feedPosition, CFG.feed.scrollStart, CFG.feed.scrollEnd,
-                [CFG.feed.center[0],CFG.feed.center[1]-CFG.feed.startFocusY*factor,CFG.feed.center[2]],
+                [center[0],center[1]-CFG.feed.startFocusY*factor],
                 targetPosition, true, scrollEase);
         }
         if (CFG.profile.enabled) {
             var profileComp = cropped("PROFILE_KEYLIGHT", screenshot, CFG.profile, precomps);
-            place3D(main, profileComp, CFG.profile, "PROFILE_3D");
+            placeCard(scene, profileComp, CFG.profile, "PROFILE_CARD");
         }
         addCamera(main);
         var voiceMeta = null;
