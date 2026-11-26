@@ -9,6 +9,19 @@
         alert(message);
     }
     var base = new File($.fileName).parent;
+    var versionFile = new File(base.fsName + "/VERSION");
+    versionFile.encoding = "UTF-8";
+    if (!versionFile.exists || !versionFile.open("r")) {
+        reportError("Не найден VERSION. Скопируйте версию из корня telegram-ae/main и прочитайте правила этой версии.");
+        return;
+    }
+    var templateVersion;
+    try { templateVersion = versionFile.read().replace(/^\s+|\s+$/g, ""); }
+    finally { versionFile.close(); }
+    if (!/^\d+\.\d+\.\d+$/.test(templateVersion)) {
+        reportError("Некорректный VERSION. Используйте версию из telegram-ae/main.");
+        return;
+    }
     var configFile = new File(base.fsName + "/shot.jsxinc");
     if (!configFile.exists) {
         reportError("Не найден shot.jsxinc. Нужна разметка конкретного скриншота по правилам репозитория.");
@@ -20,7 +33,13 @@
     if (!shot || !shot.settings) { reportError("shot.jsxinc должен вернуть settings и highlights."); return; }
     var CFG = shot.settings;
     var HIGHLIGHTS = shot.highlights || [];
+    var voice = CFG.audio;
     var scrollEase = [33.33, 66.67];
+    if (CFG.templateVersion !== templateVersion) {
+        reportError("Версия shot.jsxinc не совпадает с VERSION " + templateVersion +
+            ". Перечитайте все правила, примените изменившиеся настройки и обновите templateVersion.");
+        return;
+    }
     if (CFG.mappingStatus !== "measured") {
         reportError("Это пример конфигурации. Сначала разметьте новый скриншот и подготовьте shot.jsxinc со статусом measured.");
         return;
@@ -187,25 +206,21 @@
         return comp;
     }
     function validateWordTiming(spec, highlightNumber) {
-        var audio = CFG.audio;
-        if (!audio || !audio.file || typeof audio.startFrame !== "number" || !isFinite(audio.startFrame) ||
-            typeof audio.duration !== "number" || !isFinite(audio.duration) || audio.duration <= 0) {
-            fail("Для выделения по словам нужна начитка с заданным началом и длительностью.");
-        }
-        if (spec.wordTiming.length !== spec.rows.length) {
+        if (!voice) { fail("Для wordTiming нужна начитка."); }
+        if (!(spec.wordTiming instanceof Array) || spec.wordTiming.length !== spec.rows.length) {
             fail("Число строк wordTiming должно совпадать с rows в выделении " + highlightNumber + ".");
         }
-        var previousEnd = audio.startFrame / CFG.fps;
-        var audioEnd = previousEnd + audio.duration;
+        var previousEnd = voice.startFrame / CFG.fps;
+        var audioEnd = previousEnd + voice.duration;
         var i, j, words, word, previousWidth, rowWidth;
         for (i = 0; i < spec.rows.length; i++) {
             words = spec.wordTiming[i];
             rowWidth = spec.rows[i][2];
             previousWidth = 0;
-            if (!words || !words.length) { fail("Нет тайминга слов в строке " + (i+1) + "."); }
+            if (!(words instanceof Array) || !words.length) { fail("Нет тайминга слов в строке " + (i+1) + "."); }
             for (j = 0; j < words.length; j++) {
                 word = words[j];
-                if (!word || word.length !== 3 ||
+                if (!(word instanceof Array) || word.length !== 3 ||
                     typeof word[0] !== "number" || !isFinite(word[0]) ||
                     typeof word[1] !== "number" || !isFinite(word[1]) ||
                     typeof word[2] !== "number" || !isFinite(word[2]) ||
@@ -237,12 +252,6 @@
         var i, j, spec, row, totalWidth, elapsed, rowDuration, layer, contents, path, fill, y, h;
         for (i = 0; i < HIGHLIGHTS.length; i++) {
             spec = HIGHLIGHTS[i]; totalWidth = 0; elapsed = 0;
-            if (!spec.rows || spec.rows.length === 0) { fail("Нет строк в выделении " + (i+1) + "."); }
-            if (spec.wordTiming) {
-                validateWordTiming(spec, i+1);
-            } else if (spec.duration <= 0 || spec.start < 0 || spec.start + spec.duration > CFG.duration) {
-                fail("Неверный тайминг выделения " + (i+1));
-            }
             for (j = 0; j < spec.rows.length; j++) {
                 row = spec.rows[j];
                 if (row[2] <= 0 || row[3] <= 0 || row[0] < crop[0] || row[1] < crop[1] ||
@@ -355,12 +364,9 @@
         rig.name = "CAMERA_RIG_EDIT_MOVEMENT"; rig.threeDLayer = true;
         tr(rig).property("ADBE Anchor Point").setValue([0,0,0]);
         tr(rig).property("ADBE Position").setValue([CFG.width/2,CFG.height/2,0]);
-        // Orbit and dolly share the full timeline so both cards follow the original screen direction.
-        var names = ["ADBE Rotate X","ADBE Rotate Y","ADBE Rotate Z"], i;
-        for (i = 0; i < names.length; i++) {
-            animate(tr(rig).property(names[i]), 0, CFG.duration,
-                CFG.camera.startRotation[i], CFG.camera.endRotation[i], true);
-        }
+        // The shared plane turns around the vertical axis through the final hold.
+        animate(requiredProperty(tr(rig), "ADBE Rotate Y"), 0, CFG.duration,
+            startRotation[1], endRotation[1], true);
         var camera = main.layers.addCamera("CAMERA_3D", [CFG.width/2,CFG.height/2]);
         // Keep local transforms; Position and Point of Interest are set below.
         camera.setParentWithJump(rig);
@@ -379,6 +385,42 @@
         requiredProperty(options, "ADBE Camera Focus Distance").expression = "length(transform.position, transform.pointOfInterest)";
         camera.comment = "Native two-node 3D camera. Dolly keys on Position; orbit keys on parent CAMERA_RIG. DOF disabled initially for text clarity.";
     }
+
+    var startRotation, endRotation;
+    try {
+        if (!CFG.camera) { fail("В shot.jsxinc отсутствуют настройки камеры."); }
+        if (!(HIGHLIGHTS instanceof Array)) { fail("Поле highlights должно быть массивом."); }
+        startRotation = typeof CFG.camera.startRotation === "undefined" ? [0,-12,0] : CFG.camera.startRotation;
+        endRotation = typeof CFG.camera.endRotation === "undefined" ? [0,12,0] : CFG.camera.endRotation;
+        var rotations = [startRotation, endRotation];
+        for (var rotationIndex = 0; rotationIndex < rotations.length; rotationIndex++) {
+            var rotation = rotations[rotationIndex];
+            if (!(rotation instanceof Array) || rotation.length !== 3 || rotation[0] !== 0 || rotation[2] !== 0 ||
+                typeof rotation[1] !== "number" || !isFinite(rotation[1])) {
+                fail("Камера поворачивается только по Y. Укажите углы в формате [0, угол Y, 0].");
+            }
+        }
+        if (voice) {
+            if (voice.startFrame !== 15) { fail("Начитка должна начинаться на кадре 15, нумерация от нуля."); }
+            if (typeof voice.file !== "string" || !voice.file || typeof voice.duration !== "number" ||
+                !isFinite(voice.duration) || voice.duration <= 0 || voice.startFrame / CFG.fps + voice.duration + 1 > CFG.duration + 0.00001) {
+                fail("Укажите файл и полную длительность начитки. После неё нужна секунда тишины.");
+            }
+        }
+        for (var highlightIndex = 0; highlightIndex < HIGHLIGHTS.length; highlightIndex++) {
+            var spec = HIGHLIGHTS[highlightIndex];
+            var highlightNumber = highlightIndex+1;
+            if (!spec || !(spec.rows instanceof Array) || !spec.rows.length) { fail("Нет строк в выделении " + highlightNumber + "."); }
+            if (spec.wordTiming) {
+                validateWordTiming(spec, highlightNumber);
+            } else if (voice) {
+                fail("Для выделения " + highlightNumber + " при начитке обязателен пословный тайминг wordTiming.");
+            } else if (typeof spec.start !== "number" || !isFinite(spec.start) || typeof spec.duration !== "number" ||
+                !isFinite(spec.duration) || spec.duration <= 0 || spec.start < 0 || spec.start + spec.duration > CFG.duration) {
+                fail("Неверный тайминг выделения " + highlightNumber + ".");
+            }
+        }
+    } catch (validationError) { reportError(validationError.message); return; }
 
     var screenshotFile = fileAt(CFG.screenshot);
     if (!screenshotFile.exists) { reportError("Не найден assets/feed_green.png. Распакуйте пакет полностью."); return; }
@@ -426,13 +468,7 @@
         }
         addCamera(main);
         var voiceMeta = null;
-        if (CFG.audio && CFG.audio.file) {
-            var voice = CFG.audio;
-            if (typeof voice.startFrame !== "number" || voice.startFrame < 0 ||
-                Math.floor(voice.startFrame) !== voice.startFrame || typeof voice.duration !== "number" ||
-                voice.duration <= 0 || voice.startFrame / CFG.fps + voice.duration + 1 > CFG.duration + 0.00001) {
-                fail("Неверная длительность начитки или недостаточно места для секунды паузы.");
-            }
+        if (voice) {
             var voiceFile = fileAt(voice.file);
             if (!voiceFile.exists) { fail("Не найден файл начитки: " + voice.file); }
             var voiceSource = app.project.importFile(new ImportOptions(voiceFile));
@@ -441,12 +477,15 @@
             var voiceLayer = main.layers.add(voiceSource);
             voiceLayer.name = "VOICEOVER_START_FRAME_" + voice.startFrame;
             voiceLayer.startTime = voice.startFrame / CFG.fps;
+            voiceLayer.inPoint = voiceLayer.startTime;
             voiceLayer.outPoint = voiceLayer.startTime + voice.duration;
-            voiceMeta = {file:voiceFile.fsName, startFrame:voice.startFrame, duration:voice.duration};
+            var actualStartFrame = voiceLayer.inPoint / main.frameDuration;
+            if (Math.abs(actualStartFrame - 15) > 0.00001) { fail("В композиции начитка должна начинаться на кадре 15."); }
+            voiceMeta = {file:voiceFile.fsName, startFrame:Math.round(actualStartFrame), duration:voice.duration};
         }
         // This 2D adjustment layer is above all 3D scene layers, including the background.
         addSceneBlur(main, assets);
-        main.comment = "Built from a measured shot.jsxinc using telegram-ae. Generation alone does not confirm AE execution or render review.";
+        main.comment = "Telegram AE template version " + templateVersion + ". Built from a measured shot.jsxinc.";
         if (CFG.feed.scrollEnabled === false) {
             main.markerProperty.setValueAtTime(0, new MarkerValue("STATIC_POST_NO_SCROLL"));
         } else {
@@ -456,7 +495,7 @@
             main.markerProperty.setValueAtTime(3, new MarkerValue("NO_HIGHLIGHTS_CONFIGURED"));
         }
         main.workAreaStart = 0; main.workAreaDuration = CFG.duration; main.time = 0;
-        if (unattended) { $.global.TELEGRAM_AE_RESULT = {main: main, root: root, audio: voiceMeta}; }
+        if (unattended) { $.global.TELEGRAM_AE_RESULT = {main: main, root: root, audio: voiceMeta, templateVersion: templateVersion}; }
         else { main.openInViewer(); }
     } catch (error) {
         reportError("Не удалось завершить сборку.\n" + error.toString() + "\nСтрока: " + error.line +

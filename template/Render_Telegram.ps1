@@ -9,6 +9,10 @@
 )
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath $ProjectRoot).Path
+$versionPath = Join-Path $root 'VERSION'
+if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf)) { throw 'Не найден VERSION. Скопируйте его из telegram-ae/main вместе с шаблоном.' }
+$templateVersion = (Get-Content -LiteralPath $versionPath -Raw -Encoding UTF8).Trim()
+if ($templateVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'В VERSION ожидается номер версии вида 1.0.0.' }
 $name = Split-Path -Leaf $root
 $stateBase = Join-Path $root '.render'
 $stateDir = Join-Path $stateBase ('run_'+[Guid]::NewGuid().ToString('N'))
@@ -25,7 +29,7 @@ function Find-Executable([string]$Name) {
     return $found.Source
 }
 function Save-State([string]$Stage, [hashtable]$Details = @{}) {
-    $record = @{stage=$Stage;time=[DateTime]::UtcNow.ToString('o')}
+    $record = @{stage=$Stage;time=[DateTime]::UtcNow.ToString('o');templateVersion=$templateVersion}
     foreach ($key in $Details.Keys) { $record[$key]=$Details[$key] }
     [IO.File]::WriteAllText((Join-Path $stateDir 'status.json'), ($record|ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
     $record['directory']=$stateDir
@@ -63,6 +67,7 @@ try {
     $token = [Guid]::NewGuid().ToString('N')
     $job = @{
         token = $token
+        templateVersion = $templateVersion
         builderPath = Join-Path $root 'Build_Telegram.jsx'
         projectPath = $project
         outputPattern = Join-Path $sequenceDir 'frame_[#####].tif'
@@ -78,6 +83,7 @@ try {
             if ($candidateBuild.status -eq 'ready' -and $candidateBuild.project -eq $project) { $savedResult=$candidateResult;$build=$candidateBuild;break }
         }
         if (-not $savedResult) { throw 'Не найден отчёт успешной сборки этого AEP.' }
+        if ($build.templateVersion -cne $templateVersion) { throw 'Для продолжения используйте скрипты и VERSION той версии, которой был собран AEP.' }
         if ((Get-Item -LiteralPath $project).LastWriteTimeUtc -gt $savedResult.LastWriteTimeUtc.AddSeconds(2)) { throw 'AEP изменён после сборки; нужна новая версия задания.' }
         $job.resumeComp = [string]$build.comp
         $job.resumeAudio = $build.audio
@@ -111,6 +117,7 @@ try {
 
     $build = Get-Content -LiteralPath $job.resultPath -Raw | ConvertFrom-Json
     if ($build.status -ne 'ready' -or -not (Test-Path -LiteralPath $project -PathType Leaf)) { throw 'Изолированный AE не сохранил проект.' }
+    if ($build.templateVersion -cne $templateVersion) { throw 'Версия собранного AEP не соответствует VERSION.' }
     Save-State 'checking_frames' @{project=$project;frames=$build.frames;comp=$build.comp}
     $ffPattern = Join-Path $sequenceDir 'frame_%05d.tif'
     for ($frame = 0; $frame -lt [int]$build.frames; $frame++) {
@@ -123,9 +130,10 @@ try {
         $voicePath = [string]$build.audio.file
         if (-not (Test-Path -LiteralPath $voicePath)) { throw 'Не найден источник начитки для MP4.' }
         $voiceDuration = [double]$build.audio.duration
-        $voiceFrame = [int]$build.audio.startFrame
+        $voiceFrame = [double]$build.audio.startFrame
+        if ($voiceFrame -ne 15) { throw 'Начитка должна начинаться на кадре 15, нумерация от нуля.' }
         $offsetSamples = [long][Math]::Round(48000.0 * $voiceFrame / [double]$build.fps)
-        if ($voiceFrame -lt 0 -or $voiceDuration -le 0 -or ($voiceFrame / [double]$build.fps + $voiceDuration + 1 -gt [double]$build.duration + 0.00001)) { throw 'Неверный тайминг начитки или паузы.' }
+        if ($voiceDuration -le 0 -or ($voiceFrame / [double]$build.fps + $voiceDuration + 1 -gt [double]$build.duration + 0.00001)) { throw 'Неверная длительность начитки или паузы.' }
         $durationText = $voiceDuration.ToString([Globalization.CultureInfo]::InvariantCulture)
         $totalText = ([double]$build.duration).ToString([Globalization.CultureInfo]::InvariantCulture)
         $voiceFilter = "aresample=48000,atrim=duration=$durationText,asetpts=PTS-STARTPTS,adelay=${offsetSamples}S:all=1,apad"
@@ -144,7 +152,7 @@ try {
         $audioProbe = & $ffprobe -v error -select_streams a:0 -show_entries stream=codec_type,duration -of json $video
         if ($LASTEXITCODE -ne 0 -or -not (($audioProbe | ConvertFrom-Json).streams | Where-Object { $_.codec_type -eq 'audio' })) { throw 'В готовом MP4 не найдена звуковая дорожка.' }
     }
-    $report = @("After Effects: $($build.aeVersion)","Composition: $($build.comp)","Video: $($stream.width) x $($stream.height), $($build.fps) fps, $($stream.duration) s, $($stream.nb_read_frames) frames",'Codec: H.264 / yuv420p / CRF 17','Native AEP saved and rendered with After Effects.','Technical check: frame count, dimensions and duration match the native composition.','Visual inspection is performed separately.')
+    $report = @("Template version: $templateVersion","After Effects: $($build.aeVersion)","Composition: $($build.comp)","Video: $($stream.width) x $($stream.height), $($build.fps) fps, $($stream.duration) s, $($stream.nb_read_frames) frames",'Codec: H.264 / yuv420p / CRF 17','Native AEP saved and rendered with After Effects.','Technical check: frame count, dimensions and duration match the native composition.','Visual inspection is performed separately.')
     if ($build.audio) { $report += ("Voiceover starts at frame $($build.audio.startFrame); source duration $($build.audio.duration) s; at least one second of silence follows.") }
     [IO.File]::WriteAllLines((Join-Path $root 'Render_Report.txt'),$report,[Text.UTF8Encoding]::new($false))
     # Keep logs and native project; discard only this job's verified frame files.

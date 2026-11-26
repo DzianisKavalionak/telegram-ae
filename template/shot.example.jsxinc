@@ -3,6 +3,7 @@
 (function () {
     var settings = {
         name: "TELEGRAM_3D_KEYLIGHT_V3",
+        templateVersion: "", // Copy the reviewed number from VERSION.
         width: 3840, height: 2160, fps: 25, duration: 6,
         // Optional voiceover: measure decoded duration first, choose total duration accordingly.
         // audio: {file: "assets/voiceover.mp3", startFrame: 15, duration: 8},
@@ -33,8 +34,7 @@
         },
         camera: {
             zoom: 5200, startMagnification: 0.94, endMagnification: 1.04,
-            // Orbit and dolly run together from the first frame through the final hold.
-            startRotation: [1.1, -2.5, -0.3], endRotation: [0, 0.8, 0],
+            // The builder uses a Y-only orbit from −12° to +12° through the final hold.
             depthOfField: false, aperture: 12, blurLevel: 50
         },
         sceneOverscan: 1.25,
