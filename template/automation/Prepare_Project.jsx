@@ -1,7 +1,6 @@
 ﻿#target aftereffects
-/* Run only in the dedicated AfterFX process launched by Render_Telegram.ps1. */
+/* Build and render one job inside the dedicated AfterFX process. */
 (function () {
-    $.writeln('TELEGRAM_AE_WORKER_STARTED');
     function quote(s) {
         return '"' + String(s).replace(/[\\"\u0000-\u001f]/g, function (c) {
             if (c === '\\') { return '\\\\'; }
@@ -31,66 +30,106 @@
         for (i = 0; i < values.length; i++) { result.push(String(values[i])); }
         return result;
     }
-    var descriptorPath = $.getenv('TELEGRAM_AE_JOB_PATH');
-    if (!descriptorPath) { throw new Error('Use Render_Telegram.ps1 to start an isolated job.'); }
-    var job = $.evalFile(new File(descriptorPath));
-    if (!job || job.token !== $.getenv('TELEGRAM_AE_JOB_TOKEN')) {
-        throw new Error('Isolated job token mismatch; current AE project has not been changed.');
+
+    var token = $.getenv('TELEGRAM_AE_JOB_TOKEN');
+    var job = $.global.TELEGRAM_AE_JOB;
+    if (!token || !job || job.token !== token) { return; }
+
+    function status(stage, error) {
+        var value = {status: stage, token: token};
+        if (error) { value.error = String(error); value.line = error.line; }
+        write(job.statusPath, value);
     }
-    app.exitAfterLaunchAndEval = true;
+
+    if (app.project && (app.project.file || app.project.numItems > 0)) {
+        status('failed', new Error('Isolated After Effects did not start with an empty project.'));
+        return;
+    }
     app.exitCode = 1;
-    app.beginSuppressDialogs();
+    var suppressed = false, saved = false;
     try {
         app.setSavePreferencesOnQuit(false);
-        app.newProject();
-        $.global.TELEGRAM_AE_AUTOMATION = true;
-        $.global.TELEGRAM_AE_RESULT = null;
-        $.evalFile(new File(job.builderPath));
-        var result = $.global.TELEGRAM_AE_RESULT;
-        if (!result || !result.main) { throw new Error('Scene builder did not return its main composition.'); }
-        var main = result.main, i, item;
+        app.beginSuppressDialogs();
+        suppressed = true;
+        status('building');
+
+        var main, audio, i, item;
+        if (job.resumeComp) {
+            if (!app.open(new File(job.projectPath))) { throw new Error('Could not open saved AEP.'); }
+            for (i = 1; i <= app.project.numItems; i++) {
+                item = app.project.item(i);
+                if (item instanceof CompItem && item.name === job.resumeComp) {
+                    if (main) { throw new Error('Several compositions have the saved name: ' + job.resumeComp); }
+                    main = item;
+                }
+            }
+            if (!main) { throw new Error('Saved composition missing: ' + job.resumeComp); }
+            audio = job.resumeAudio;
+            saved = true;
+        } else {
+            if (!app.project && !app.newProject()) { throw new Error('Could not initialize a project.'); }
+            $.global.TELEGRAM_AE_AUTOMATION = true;
+            $.global.TELEGRAM_AE_RESULT = null;
+            $.evalFile(new File(job.builderPath));
+            var result = $.global.TELEGRAM_AE_RESULT;
+            if (!result || !result.main) { throw new Error('Scene builder did not return its main composition.'); }
+            main = result.main;
+            audio = result.audio;
+        }
+
         main.resolutionFactor = [1,1];
         for (i = 1; i <= app.project.numItems; i++) {
             item = app.project.item(i);
             if (item instanceof FootageItem && item.file && item.footageMissing) {
-                throw new Error('Missing footage: ' + item.file.fsName);
+                throw new Error('Missing footage: ' + item.name);
             }
         }
-        var rq = app.project.renderQueue.items.add(main);
-        var rsTemplates = list(rq.templates);
-        for (i = 0; i < rsTemplates.length; i++) {
-            if (rsTemplates[i] === 'Best Settings') { rq.applyTemplate(rsTemplates[i]); break; }
+
+        var queue = app.project.renderQueue;
+        for (i = 1; i <= queue.numItems; i++) {
+            if (queue.item(i).render) { queue.item(i).render = false; }
         }
-        rq.timeSpanStart = 0; rq.timeSpanDuration = main.duration; rq.skipFrames = 0;
-        var om = rq.outputModule(1), templates = list(om.templates), selected = null;
+        var entry = queue.items.add(main);
+        var settingsTemplates = list(entry.templates);
+        for (i = 0; i < settingsTemplates.length; i++) {
+            if (settingsTemplates[i] === 'Best Settings') { entry.applyTemplate(settingsTemplates[i]); break; }
+        }
+        entry.timeSpanStart = 0;
+        entry.timeSpanDuration = main.duration;
+        entry.skipFrames = 0;
+
+        var output = entry.outputModule(1), templates = list(output.templates), selected = 'TIFF Sequence with Alpha';
+        var found = false;
         for (i = 0; i < templates.length; i++) {
-            if (templates[i] === 'Lossless' || templates[i] === job.outputTemplate) { selected = templates[i]; break; }
+            if (templates[i] === selected) { found = true; break; }
         }
-        if (!selected) { throw new Error('Lossless output template unavailable. Available: ' + templates.join(', ')); }
-        om.applyTemplate(selected);
-        om.file = new File(job.intermediatePath);
-        var outputSettings = om.getSettings(GetSettingsFormat.STRING);
-        if (String(outputSettings.Format).toUpperCase() !== 'AVI') {
-            throw new Error('Expected AVI from Lossless template; got ' + outputSettings.Format);
-        }
-        app.project.save(new File(job.projectPath));
+        if (!found) { throw new Error('TIFF Sequence with Alpha is unavailable.'); }
+        output.applyTemplate(selected);
+        output.file = new File(job.outputPattern);
+
+        if (!saved) { app.project.save(new File(job.projectPath)); }
         write(job.resultPath, {
             status: 'ready', aeVersion: String(app.version), project: job.projectPath,
             comp: main.name, width: main.width, height: main.height,
-            fps: main.frameRate, duration: main.duration, audio: result.audio || null,
-            frames: Math.round(main.duration * main.frameRate), rqIndex: app.project.renderQueue.numItems,
-            outputTemplate: selected, outputFormat: outputSettings.Format,
-            availableOutputTemplates: templates
+            fps: main.frameRate, duration: main.duration, audio: audio || null,
+            frames: Math.round(main.duration * main.frameRate), rqIndex: queue.numItems,
+            outputTemplate: selected, outputFormat: 'TIFF', availableOutputTemplates: templates
         });
+
+        if (typeof app.setMultiFrameRenderingConfig === 'function') { app.setMultiFrameRenderingConfig(true, job.cpuPercent); }
+        if (typeof app.setMemoryUsageLimits === 'function') { app.setMemoryUsageLimits(10,60); }
+        status('rendering');
+        queue.render();
+        if (entry.status !== RQItemStatus.DONE) { throw new Error('Render queue did not report DONE: ' + entry.status); }
+        status('done');
         app.exitCode = 0;
     } catch (error) {
-        try { write(job.resultPath, {status:'failed',error:String(error),line:error.line}); }
-        catch (writeError) { $.writeln(String(error) + ' / ' + String(writeError)); }
-        app.exitCode = 1;
+        status('failed', error);
     } finally {
         $.global.TELEGRAM_AE_AUTOMATION = false;
-        app.endSuppressDialogs(false);
-        // The inherited token above proves this is our isolated worker instance.
+        $.global.TELEGRAM_AE_RESULT = null;
+        if (suppressed) { app.endSuppressDialogs(false); }
+        // With no preferences saved, the dedicated process can exit without changing the active AE.
         if (app.project) { app.project.close(CloseOptions.DO_NOT_SAVE_CHANGES); }
         app.quit();
     }

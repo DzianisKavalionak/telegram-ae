@@ -1,18 +1,23 @@
-param(
+﻿param(
     [string]$ProjectRoot = $PSScriptRoot,
     [string]$AfterEffectsDirectory,
     [switch]$Resume,
-    [switch]$DisableResident,
+    [switch]$DisableResident, # Kept for commands that selected the former non-resident mode.
     [ValidateRange(1,100)][int]$CpuPercent = 70,
-    [int]$BuildTimeoutSeconds = 300,
-    [int]$RenderTimeoutSeconds = 1800
+    [ValidateRange(1,86400)][int]$BuildTimeoutSeconds = 300,
+    [ValidateRange(1,86400)][int]$RenderTimeoutSeconds = 1800
 )
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $name = Split-Path -Leaf $root
 $stateBase = Join-Path $root '.render'
 $stateDir = Join-Path $stateBase ('run_'+[Guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+New-Item -ItemType Directory -Path $stateBase -Force | Out-Null
+try {
+    $jobLock = [IO.File]::Open((Join-Path $stateBase 'job.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+} catch [IO.IOException] {
+    throw "Не удалось заблокировать папку сюжета $root. $($_.Exception.Message)"
+}
 
 function Find-Executable([string]$Name) {
     $found = Get-Command $Name -ErrorAction SilentlyContinue
@@ -27,21 +32,13 @@ function Save-State([string]$Stage, [hashtable]$Details = @{}) {
     [IO.File]::WriteAllText((Join-Path $stateBase 'status.json'), ($record|ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
     Write-Output ('STAGE: ' + $Stage)
 }
-function Wait-Worker($Process, [int]$Timeout, [string]$Stage) {
-    $deadline = [DateTime]::UtcNow.AddSeconds($Timeout)
-    while (-not $Process.HasExited) {
-        if ([DateTime]::UtcNow -gt $deadline) {
-            throw ($Stage + ' не завершился за отведённое время. Процесс задания: ' + $Process.Id + '. Проверьте .render; открытый пользовательский AE не затрагивался.')
-        }
-        Start-Sleep -Seconds 2
-        $Process.Refresh()
-    }
-    return $Process.ExitCode
-}
 try {
+    New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
     if (-not $AfterEffectsDirectory) {
-        $running = Get-Process -Name AfterFX -ErrorAction SilentlyContinue | Where-Object Path | Select-Object -First 1
-        if ($running) { $AfterEffectsDirectory = Split-Path -Parent $running.Path }
+        $registration = Get-Item -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\AfterFX.exe' -ErrorAction SilentlyContinue
+        if ($registration -and $registration.GetValue('')) {
+            $AfterEffectsDirectory = Split-Path -Parent ([string]$registration.GetValue(''))
+        }
         if (-not $AfterEffectsDirectory) {
             $candidates = @()
             foreach ($base in @((Join-Path $env:ProgramFiles 'Adobe'), 'D:\Adobe')) {
@@ -51,37 +48,30 @@ try {
             }
             foreach ($candidate in $candidates) {
                 $support = Join-Path $candidate.FullName 'Support Files'
-                if (Test-Path -LiteralPath (Join-Path $support 'aerender.exe')) { $AfterEffectsDirectory=$support;break }
+                if (Test-Path -LiteralPath (Join-Path $support 'AfterFX.exe')) { $AfterEffectsDirectory=$support;break }
             }
         }
     }
     $afterfx = Join-Path $AfterEffectsDirectory 'AfterFX.exe'
-    $aerender = Join-Path $AfterEffectsDirectory 'aerender.exe'
-    if (-not (Test-Path -LiteralPath $afterfx) -or -not (Test-Path -LiteralPath $aerender)) { throw 'Укажите папку Support Files установленного AE через -AfterEffectsDirectory.' }
+    if (-not (Test-Path -LiteralPath $afterfx -PathType Leaf)) { throw 'Укажите папку Support Files установленного AE через -AfterEffectsDirectory.' }
     $ffmpeg = Find-Executable 'ffmpeg.exe'
     $ffprobe = Find-Executable 'ffprobe.exe'
     $project = Join-Path $root ($name+'.aep')
     $video = Join-Path $root ($name+'.mp4')
     $archive = Join-Path (Split-Path -Parent $root) ($name+'_Project.zip')
     foreach ($target in @($project,$video,$archive)) { if ((Test-Path -LiteralPath $target) -and -not ($Resume -and $target -eq $project)) { throw ('Выходной файл уже существует: '+$target) } }
+    $sequenceDir = Join-Path $stateDir 'frames'
     $token = [Guid]::NewGuid().ToString('N')
     $job = @{
-        token=$token;builderPath=(Join-Path $root 'Build_Telegram.jsx');projectPath=$project
-        intermediatePath=(Join-Path $stateDir 'master.avi');resultPath=(Join-Path $stateDir 'build.json')
-        outputTemplate='Lossless'
+        token = $token
+        builderPath = Join-Path $root 'Build_Telegram.jsx'
+        projectPath = $project
+        outputPattern = Join-Path $sequenceDir 'frame_[#####].tif'
+        resultPath = Join-Path $stateDir 'build.json'
+        statusPath = Join-Path $stateDir 'worker.json'
+        cpuPercent = $CpuPercent
     }
-    $residentMode = (-not $Resume -and -not $DisableResident)
-    if ($residentMode) {
-        $sequenceDir = Join-Path $stateDir 'frames'
-        New-Item -ItemType Directory -Path $sequenceDir -ErrorAction Stop | Out-Null
-        $aePattern = Join-Path $sequenceDir 'frame_[#####].tif'
-        $helper = Join-Path $root 'automation\Invoke_Resident.ps1'
-        if (-not (Test-Path -LiteralPath $helper)) { throw 'Не найден automation/Invoke_Resident.ps1.' }
-        Save-State 'resident' @{project=$project}
-        & $helper -AfterEffectsPath $afterfx -BuilderPath $job.builderPath -ProjectPath $project -OutputPattern $aePattern -ResultPath $job.resultPath -JobStatusPath (Join-Path $stateDir 'resident_job.json') -CpuPercent $CpuPercent -TimeoutSeconds ($BuildTimeoutSeconds+$RenderTimeoutSeconds)
-        $build = Get-Content -LiteralPath $job.resultPath -Raw | ConvertFrom-Json
-        if ($build.status -ne 'ready' -or -not (Test-Path -LiteralPath $project)) { throw 'Фоновый AE не сохранил проект.' }
-    } elseif ($Resume) {
+    if ($Resume) {
         if (-not (Test-Path -LiteralPath $project)) { throw 'Для продолжения нужен ранее сохранённый AEP.' }
         $savedResult = $null
         foreach ($candidateResult in (Get-ChildItem -LiteralPath $stateBase -Filter 'build.json' -Recurse -File | Sort-Object LastWriteTimeUtc -Descending)) {
@@ -90,46 +80,40 @@ try {
         }
         if (-not $savedResult) { throw 'Не найден отчёт успешной сборки этого AEP.' }
         if ((Get-Item -LiteralPath $project).LastWriteTimeUtc -gt $savedResult.LastWriteTimeUtc.AddSeconds(2)) { throw 'AEP изменён после сборки; нужна новая версия задания.' }
-        [IO.File]::WriteAllText($job.resultPath,($build|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+        $job.resumeComp = [string]$build.comp
+        $job.resumeAudio = $build.audio
+        if (-not $job.resumeComp) { throw 'В отчёте сборки отсутствует имя композиции.' }
         Save-State 'resuming' @{project=$project;comp=$build.comp}
     } else {
-    $bootstrap = Join-Path ([IO.Path]::GetTempPath()) ('telegram-ae-'+$token)
-    New-Item -ItemType Directory -Path $bootstrap | Out-Null
-    Copy-Item -LiteralPath (Join-Path $root 'automation\Prepare_Project.jsx') -Destination (Join-Path $bootstrap 'Prepare_Project.jsx')
-    $descriptor = Join-Path $bootstrap 'job.jsxinc'
-    [IO.File]::WriteAllText($descriptor, ('('+($job|ConvertTo-Json -Depth 4)+');'), [Text.UTF8Encoding]::new($true))
-    $env:TELEGRAM_AE_JOB_PATH = $descriptor
-    $env:TELEGRAM_AE_JOB_TOKEN = $token
-    # AE 26.x does not reliably dispatch -r to an instance started with -m.
-    # A per-job startup stub reaches only the new process carrying this token.
-    $aeVersion = (Get-Item -LiteralPath $afterfx).VersionInfo.FileVersion
-    if ($aeVersion -notmatch '^(\d+\.\d+)') { throw 'Не удалось определить версию профиля AE.' }
-    $startupDirectory = Join-Path $env:APPDATA ('Adobe\After Effects\'+$Matches[1]+'\Scripts\Startup')
-    New-Item -ItemType Directory -Path $startupDirectory -Force | Out-Null
-    $startupStub = Join-Path $startupDirectory ('Telegram_AE_Job_'+$token+'.jsx')
-    $workerLiteral = ((Join-Path $bootstrap 'Prepare_Project.jsx').Replace('\','/') | ConvertTo-Json -Compress)
-    $scheduledLiteral = (('$.evalFile(new File('+$workerLiteral+'));') | ConvertTo-Json -Compress)
-    $stubSource = '(function(){if($.getenv("TELEGRAM_AE_JOB_TOKEN")!=="'+$token+'")return;app.scheduleTask('+$scheduledLiteral+',1500,false);}());'
-    [IO.File]::WriteAllText($startupStub,$stubSource,[Text.UTF8Encoding]::new($false))
-    Save-State 'building' @{project=$project}
-    $worker = Start-Process -FilePath $afterfx -ArgumentList @('-m') -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $stateDir 'build.stdout.log') -RedirectStandardError (Join-Path $stateDir 'build.stderr.log')
-    $buildExit = Wait-Worker $worker $BuildTimeoutSeconds 'Сборка AEP'
-    if (-not (Test-Path -LiteralPath $job.resultPath)) { throw ('AE не создал отчёт сборки. Код процесса: '+$buildExit+'. Проверьте build.stdout.log и build.stderr.log.') }
+        foreach ($required in @($job.builderPath,(Join-Path $root 'shot.jsxinc'))) {
+            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Не найден $required." }
+        }
+        Save-State 'building' @{project=$project}
+    }
+
+    $helper = Join-Path $root 'automation\Invoke_Isolated.ps1'
+    $workerPath = Join-Path $root 'automation\Prepare_Project.jsx'
+    foreach ($required in @($helper,$workerPath)) {
+        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Не найден $required." }
+    }
+    New-Item -ItemType Directory -Path $sequenceDir -ErrorAction Stop | Out-Null
+    $jobJson = $job | ConvertTo-Json -Depth 5 -Compress
+    [IO.File]::WriteAllText((Join-Path $stateDir 'job.json'), $jobJson, [Text.UTF8Encoding]::new($true))
+    $bootstrap = Join-Path ([IO.Path]::GetTempPath()) ("Telegram_AE_$token.jsx")
+    $workerLiteral = ConvertTo-Json -InputObject $workerPath -Compress
+    $script = "#target aftereffects`n" + '(function(){if($.getenv("TELEGRAM_AE_JOB_TOKEN")!=="' + $token +
+        '"){return;}$.global.TELEGRAM_AE_JOB = ' + $jobJson +
+        ';var f=new File($.global.TELEGRAM_AE_JOB.statusPath);f.encoding="UTF-8";' +
+        'if(f.open("w")){f.write(' + (ConvertTo-Json -InputObject ('{"status":"loading","token":"' + $token + '"}') -Compress) +
+        ');f.close();}$.evalFile(new File(' + $workerLiteral + '));}());'
+    [IO.File]::WriteAllText($bootstrap, $script, [Text.UTF8Encoding]::new($true))
+    . $helper
+    Invoke-TelegramIsolatedAE -AfterEffectsPath $afterfx -WorkerPath $bootstrap -Token $token -JobStatusPath $job.statusPath -BuildTimeoutSeconds $BuildTimeoutSeconds -RenderTimeoutSeconds $RenderTimeoutSeconds
+
     $build = Get-Content -LiteralPath $job.resultPath -Raw | ConvertFrom-Json
-    if ($build.status -ne 'ready' -or -not (Test-Path -LiteralPath $project)) { throw ('Ошибка сборки AE: '+$build.error+'; строка '+$build.line) }
-    }
-    if ($residentMode) { Save-State 'checking_frames' @{project=$project;frames=$build.frames;comp=$build.comp} } else { Save-State 'rendering' @{project=$project;frames=$build.frames;comp=$build.comp} }
-    if (-not ($build.availableOutputTemplates -contains 'TIFF Sequence with Alpha')) { throw 'В AE не найден шаблон TIFF Sequence with Alpha для надёжного рендера кадров.' }
-    $sequenceDir = Join-Path $stateDir 'frames'
+    if ($build.status -ne 'ready' -or -not (Test-Path -LiteralPath $project -PathType Leaf)) { throw 'Изолированный AE не сохранил проект.' }
+    Save-State 'checking_frames' @{project=$project;frames=$build.frames;comp=$build.comp}
     $ffPattern = Join-Path $sequenceDir 'frame_%05d.tif'
-    if (-not $residentMode) {
-        New-Item -ItemType Directory -Path $sequenceDir -ErrorAction Stop | Out-Null
-        $aePattern = Join-Path $sequenceDir 'frame_[#####].tif'
-        $renderArgs = @('-project',('"'+$project+'"'),'-comp',('"'+$build.comp+'"'),'-OMtemplate','"TIFF Sequence with Alpha"','-output',('"'+$aePattern+'"'),'-mfr','ON',[string]$CpuPercent,'-mem_usage','10','60','-sound','OFF')
-        $render = Start-Process -FilePath $aerender -ArgumentList $renderArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $stateDir 'aerender.stdout.log') -RedirectStandardError (Join-Path $stateDir 'aerender.stderr.log')
-        $renderExit = Wait-Worker $render $RenderTimeoutSeconds 'Фоновый рендер'
-        if ($renderExit -ne 0) { throw ('aerender завершился с кодом '+$renderExit+'. Проверьте журнал в .render.') }
-    }
     for ($frame = 0; $frame -lt [int]$build.frames; $frame++) {
         $framePath = Join-Path $sequenceDir ('frame_{0:D5}.tif' -f $frame)
         if (-not (Test-Path -LiteralPath $framePath) -or (Get-Item -LiteralPath $framePath).Length -eq 0) { throw ('Отсутствует кадр рендера: '+$framePath) }
@@ -168,7 +152,7 @@ try {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zip = [IO.Compression.ZipFile]::Open($archive,[IO.Compression.ZipArchiveMode]::Create)
     try {
-        $files = @('Build_Telegram.jsx','shot.jsxinc','README.txt','Render_Report.txt','Render_Telegram.ps1','automation\Prepare_Project.jsx','automation\Invoke_Resident.ps1','automation\ResidentWorker.jsx',($name+'.aep'))
+        $files = @('Build_Telegram.jsx','shot.jsxinc','README.txt','Render_Report.txt','Render_Telegram.ps1','automation\Prepare_Project.jsx','automation\Invoke_Isolated.ps1',($name+'.aep'))
         $files += Get-ChildItem -LiteralPath (Join-Path $root 'assets') -File | ForEach-Object { 'assets\'+$_.Name }
         foreach ($relative in $files) {
             $file = Join-Path $root $relative
@@ -184,10 +168,9 @@ try {
     }
     Write-Output ([ordered]@{video=$video;project=$project;archive=$archive}|ConvertTo-Json -Compress)
 } catch {
-    Save-State 'failed' @{error=$_.Exception.Message}
+    if (Test-Path -LiteralPath $stateDir) { Save-State 'failed' @{error=$_.Exception.Message} }
     throw
 } finally {
-    if ($startupStub -and (Test-Path -LiteralPath $startupStub)) { Remove-Item -LiteralPath $startupStub }
-    Remove-Item Env:TELEGRAM_AE_JOB_PATH -ErrorAction SilentlyContinue
-    Remove-Item Env:TELEGRAM_AE_JOB_TOKEN -ErrorAction SilentlyContinue
+    if ($bootstrap -and (Test-Path -LiteralPath $bootstrap)) { Remove-Item -LiteralPath $bootstrap -ErrorAction SilentlyContinue }
+    $jobLock.Dispose()
 }
