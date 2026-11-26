@@ -16,8 +16,6 @@
             center: [1340, 1080, 0],
             startFocusY: 620, endFocusY: 2735,
             scrollStart: 0, scrollEnd: 2.2,
-            // After scrolling, turn the post around the framing point. Angles are X/Y/Z degrees.
-            endRotation: [-1.8, 5, 1],
             // Original screenshot coordinates; inset protects opaque interiors.
             protect: [
                 [834, 0, 1290, 108, 40],
@@ -35,6 +33,7 @@
         },
         camera: {
             zoom: 5200, startMagnification: 0.94, endMagnification: 1.04,
+            // Orbit and dolly run together from the first frame through the final hold.
             startRotation: [1.1, -2.5, -0.3], endRotation: [0, 0.8, 0],
             depthOfField: false, aperture: 12, blurLevel: 50
         },

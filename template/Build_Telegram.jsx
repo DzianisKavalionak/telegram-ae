@@ -355,18 +355,15 @@
         layer.comment = "Camera Lens Blur over the complete scene from frame zero. Radius reaches zero at scroll end; native camera DOF remains separate.";
     }
     function addCamera(main) {
-        var scrolling = CFG.feed.scrollEnabled !== false;
-        var moveStart = scrolling ? CFG.feed.scrollStart : 0;
-        var moveEnd = scrolling ? CFG.feed.scrollEnd : CFG.duration;
-        var influences = scrolling ? scrollEase : null;
         var rig = main.layers.addNull(CFG.duration);
         rig.name = "CAMERA_RIG_EDIT_MOVEMENT"; rig.threeDLayer = true;
         tr(rig).property("ADBE Anchor Point").setValue([0,0,0]);
         tr(rig).property("ADBE Position").setValue([CFG.width/2,CFG.height/2,0]);
+        // Orbit and dolly share the full timeline so both cards follow the original screen direction.
         var names = ["ADBE Rotate X","ADBE Rotate Y","ADBE Rotate Z"], i;
         for (i = 0; i < names.length; i++) {
-            animate(tr(rig).property(names[i]), moveStart, moveEnd,
-                CFG.camera.startRotation[i], CFG.camera.endRotation[i], true, influences);
+            animate(tr(rig).property(names[i]), 0, CFG.duration,
+                CFG.camera.startRotation[i], CFG.camera.endRotation[i], true);
         }
         var camera = main.layers.addCamera("CAMERA_3D", [CFG.width/2,CFG.height/2]);
         // Keep local transforms; Position and Point of Interest are set below.
@@ -375,9 +372,9 @@
         var cameraTransform = tr(camera);
         // A camera's Point of Interest uses the ADBE Anchor Point match name.
         requiredProperty(cameraTransform, "ADBE Anchor Point").setValue([0,0,0]);
-        animate(requiredProperty(cameraTransform, "ADBE Position"), moveStart, moveEnd,
+        animate(requiredProperty(cameraTransform, "ADBE Position"), 0, CFG.duration,
             [0,0,-CFG.camera.zoom/CFG.camera.startMagnification],
-            [0,0,-CFG.camera.zoom/CFG.camera.endMagnification], true, influences);
+            [0,0,-CFG.camera.zoom/CFG.camera.endMagnification], true);
         var options = requiredProperty(camera, "ADBE Camera Options Group");
         requiredProperty(options, "ADBE Camera Zoom").setValue(CFG.camera.zoom);
         requiredProperty(options, "ADBE Camera Depth of Field").setValue(CFG.camera.depthOfField ? 1 : 0);
@@ -414,27 +411,17 @@
         addBackground(main, backgroundFile, assets);
         var feedComp = cropped("FEED_KEYLIGHT_AND_MARKS", screenshot, CFG.feed, precomps);
         addHighlights(feedComp, CFG.feed.crop);
-        var scrolling = CFG.feed.scrollEnabled !== false;
-        var feed = place3D(main, feedComp, CFG.feed, scrolling ? "FEED_3D_SCROLL" : "POST_3D_STATIC");
-        var feedTransform = tr(feed);
-        feedTransform.property("ADBE Anchor Point").setValue([feedComp.width/2,CFG.feed.endFocusY,0]);
+        var feed = place3D(main, feedComp, CFG.feed, CFG.feed.scrollEnabled === false ? "POST_3D_STATIC" : "FEED_3D_SCROLL");
+        tr(feed).property("ADBE Anchor Point").setValue([feedComp.width/2,0,0]);
         var factor = CFG.feed.width/feedComp.width;
-        var feedPosition = feedTransform.property("ADBE Position");
-        if (scrolling) {
-            var scrollDistance = (CFG.feed.endFocusY-CFG.feed.startFocusY)*factor;
+        var feedPosition = tr(feed).property("ADBE Position");
+        var targetPosition = [CFG.feed.center[0],CFG.feed.center[1]-CFG.feed.endFocusY*factor,CFG.feed.center[2]];
+        if (CFG.feed.scrollEnabled === false) {
+            feedPosition.setValue(targetPosition);
+        } else {
             animate(feedPosition, CFG.feed.scrollStart, CFG.feed.scrollEnd,
-                [CFG.feed.center[0],CFG.feed.center[1]+scrollDistance,CFG.feed.center[2]],
-                CFG.feed.center, true, scrollEase);
-        }
-        var postTurnStart = scrolling ? CFG.feed.scrollEnd : 0;
-        if (postTurnStart < CFG.duration) {
-            // Turn around the point framed by the camera. Marks are inside the same precomp.
-            var postEndRotation = CFG.feed.endRotation || [-1.8, 5, 1];
-            var postRotationAxes = ["ADBE Rotate X", "ADBE Rotate Y", "ADBE Rotate Z"];
-            for (var axis = 0; axis < postRotationAxes.length; axis++) {
-                animate(requiredProperty(feedTransform, postRotationAxes[axis]),
-                    postTurnStart, CFG.duration, 0, postEndRotation[axis], true, [33.33, 33.33]);
-            }
+                [CFG.feed.center[0],CFG.feed.center[1]-CFG.feed.startFocusY*factor,CFG.feed.center[2]],
+                targetPosition, true, scrollEase);
         }
         if (CFG.profile.enabled) {
             var profileComp = cropped("PROFILE_KEYLIGHT", screenshot, CFG.profile, precomps);
