@@ -20,6 +20,7 @@
     if (!shot || !shot.settings) { reportError("shot.jsxinc должен вернуть settings и highlights."); return; }
     var CFG = shot.settings;
     var HIGHLIGHTS = shot.highlights || [];
+    var scrollEase = [33.33, 66.67];
     if (CFG.mappingStatus !== "measured") {
         reportError("Это пример конфигурации. Сначала разметьте новый скриншот и подготовьте shot.jsxinc со статусом measured.");
         return;
@@ -40,24 +41,26 @@
         if (/^(?:[A-Za-z]:[\\\/]|[\\\/]{2})/.test(path)) { return new File(path); }
         return new File(base.fsName + "/" + path);
     }
-    function smooth(prop) {
+    function smooth(prop, influences) {
         if (prop.numKeys < 2) { return; }
         var count = prop.keyInTemporalEase(1).length;
+        var startInfluence = influences ? influences[0] : 65;
+        var endInfluence = influences ? influences[1] : 65;
         var k, j, incoming, outgoing;
         for (k = 1; k <= prop.numKeys; k++) {
             incoming = []; outgoing = [];
             for (j = 0; j < count; j++) {
-                incoming.push(new KeyframeEase(0, 65));
-                outgoing.push(new KeyframeEase(0, 65));
+                incoming.push(new KeyframeEase(0, endInfluence));
+                outgoing.push(new KeyframeEase(0, startInfluence));
             }
             prop.setInterpolationTypeAtKey(k, KeyframeInterpolationType.BEZIER, KeyframeInterpolationType.BEZIER);
             prop.setTemporalEaseAtKey(k, incoming, outgoing);
         }
     }
-    function animate(prop, begin, end, first, last, eased) {
+    function animate(prop, begin, end, first, last, eased, influences) {
         prop.setValueAtTime(begin, first);
         prop.setValueAtTime(end, last);
-        if (eased) { smooth(prop); }
+        if (eased) { smooth(prop, influences); }
         else {
             prop.setInterpolationTypeAtKey(1, KeyframeInterpolationType.LINEAR, KeyframeInterpolationType.LINEAR);
             prop.setInterpolationTypeAtKey(2, KeyframeInterpolationType.LINEAR, KeyframeInterpolationType.LINEAR);
@@ -355,6 +358,7 @@
         var scrolling = CFG.feed.scrollEnabled !== false;
         var moveStart = scrolling ? CFG.feed.scrollStart : 0;
         var moveEnd = scrolling ? CFG.feed.scrollEnd : CFG.duration;
+        var influences = scrolling ? scrollEase : null;
         var rig = main.layers.addNull(CFG.duration);
         rig.name = "CAMERA_RIG_EDIT_MOVEMENT"; rig.threeDLayer = true;
         tr(rig).property("ADBE Anchor Point").setValue([0,0,0]);
@@ -362,7 +366,7 @@
         var names = ["ADBE Rotate X","ADBE Rotate Y","ADBE Rotate Z"], i;
         for (i = 0; i < names.length; i++) {
             animate(tr(rig).property(names[i]), moveStart, moveEnd,
-                CFG.camera.startRotation[i], CFG.camera.endRotation[i], true);
+                CFG.camera.startRotation[i], CFG.camera.endRotation[i], true, influences);
         }
         var camera = main.layers.addCamera("CAMERA_3D", [CFG.width/2,CFG.height/2]);
         // Keep local transforms; Position and Point of Interest are set below.
@@ -373,7 +377,7 @@
         requiredProperty(cameraTransform, "ADBE Anchor Point").setValue([0,0,0]);
         animate(requiredProperty(cameraTransform, "ADBE Position"), moveStart, moveEnd,
             [0,0,-CFG.camera.zoom/CFG.camera.startMagnification],
-            [0,0,-CFG.camera.zoom/CFG.camera.endMagnification], true);
+            [0,0,-CFG.camera.zoom/CFG.camera.endMagnification], true, influences);
         var options = requiredProperty(camera, "ADBE Camera Options Group");
         requiredProperty(options, "ADBE Camera Zoom").setValue(CFG.camera.zoom);
         requiredProperty(options, "ADBE Camera Depth of Field").setValue(CFG.camera.depthOfField ? 1 : 0);
@@ -420,7 +424,7 @@
         } else {
             animate(feedPosition, CFG.feed.scrollStart, CFG.feed.scrollEnd,
                 [CFG.feed.center[0],CFG.feed.center[1]-CFG.feed.startFocusY*factor,CFG.feed.center[2]],
-                targetPosition,true);
+                targetPosition, true, scrollEase);
         }
         if (CFG.profile.enabled) {
             var profileComp = cropped("PROFILE_KEYLIGHT", screenshot, CFG.profile, precomps);

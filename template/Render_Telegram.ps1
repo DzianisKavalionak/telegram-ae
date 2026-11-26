@@ -58,8 +58,7 @@ try {
     $ffprobe = Find-Executable 'ffprobe.exe'
     $project = Join-Path $root ($name+'.aep')
     $video = Join-Path $root ($name+'.mp4')
-    $archive = Join-Path (Split-Path -Parent $root) ($name+'_Project.zip')
-    foreach ($target in @($project,$video,$archive)) { if ((Test-Path -LiteralPath $target) -and -not ($Resume -and $target -eq $project)) { throw ('Выходной файл уже существует: '+$target) } }
+    foreach ($target in @($project,$video)) { if ((Test-Path -LiteralPath $target) -and -not ($Resume -and $target -eq $project)) { throw ('Выходной файл уже существует: '+$target) } }
     $sequenceDir = Join-Path $stateDir 'frames'
     $token = [Guid]::NewGuid().ToString('N')
     $job = @{
@@ -148,25 +147,12 @@ try {
     $report = @("After Effects: $($build.aeVersion)","Composition: $($build.comp)","Video: $($stream.width) x $($stream.height), $($build.fps) fps, $($stream.duration) s, $($stream.nb_read_frames) frames",'Codec: H.264 / yuv420p / CRF 17','Native AEP saved and rendered with After Effects.','Technical check: frame count, dimensions and duration match the native composition.','Visual inspection is performed separately.')
     if ($build.audio) { $report += ("Voiceover starts at frame $($build.audio.startFrame); source duration $($build.audio.duration) s; at least one second of silence follows.") }
     [IO.File]::WriteAllLines((Join-Path $root 'Render_Report.txt'),$report,[Text.UTF8Encoding]::new($false))
-    Save-State 'packaging' @{video=$video;project=$project}
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $zip = [IO.Compression.ZipFile]::Open($archive,[IO.Compression.ZipArchiveMode]::Create)
-    try {
-        $files = @('Build_Telegram.jsx','shot.jsxinc','README.txt','Render_Report.txt','Render_Telegram.ps1','automation\Prepare_Project.jsx','automation\Invoke_Isolated.ps1',($name+'.aep'))
-        $files += Get-ChildItem -LiteralPath (Join-Path $root 'assets') -File | ForEach-Object { 'assets\'+$_.Name }
-        foreach ($relative in $files) {
-            $file = Join-Path $root $relative
-            if (-not (Test-Path -LiteralPath $file)) { throw ('Не найден файл для архива: '+$relative) }
-            $entry = $name+'/'+$relative.Replace('\','/')
-            [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip,$file,$entry,[IO.Compression.CompressionLevel]::Optimal)
-        }
-    } finally { $zip.Dispose() }
-    Save-State 'complete' @{video=$video;project=$project;archive=$archive;width=$build.width;height=$build.height;fps=$build.fps;duration=$build.duration;frames=$build.frames}
     # Keep logs and native project; discard only this job's verified frame files.
     for ($frame = 0; $frame -lt [int]$build.frames; $frame++) {
         Remove-Item -LiteralPath (Join-Path $sequenceDir ('frame_{0:D5}.tif' -f $frame))
     }
-    Write-Output ([ordered]@{video=$video;project=$project;archive=$archive}|ConvertTo-Json -Compress)
+    Save-State 'complete' @{video=$video;project=$project;width=$build.width;height=$build.height;fps=$build.fps;duration=$build.duration;frames=$build.frames}
+    Write-Output ([ordered]@{video=$video;project=$project}|ConvertTo-Json -Compress)
 } catch {
     if (Test-Path -LiteralPath $stateDir) { Save-State 'failed' @{error=$_.Exception.Message} }
     throw
