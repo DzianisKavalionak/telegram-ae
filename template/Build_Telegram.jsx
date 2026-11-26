@@ -414,17 +414,27 @@
         addBackground(main, backgroundFile, assets);
         var feedComp = cropped("FEED_KEYLIGHT_AND_MARKS", screenshot, CFG.feed, precomps);
         addHighlights(feedComp, CFG.feed.crop);
-        var feed = place3D(main, feedComp, CFG.feed, CFG.feed.scrollEnabled === false ? "POST_3D_STATIC" : "FEED_3D_SCROLL");
-        tr(feed).property("ADBE Anchor Point").setValue([feedComp.width/2,0,0]);
+        var scrolling = CFG.feed.scrollEnabled !== false;
+        var feed = place3D(main, feedComp, CFG.feed, scrolling ? "FEED_3D_SCROLL" : "POST_3D_STATIC");
+        var feedTransform = tr(feed);
+        feedTransform.property("ADBE Anchor Point").setValue([feedComp.width/2,CFG.feed.endFocusY,0]);
         var factor = CFG.feed.width/feedComp.width;
-        var feedPosition = tr(feed).property("ADBE Position");
-        var targetPosition = [CFG.feed.center[0],CFG.feed.center[1]-CFG.feed.endFocusY*factor,CFG.feed.center[2]];
-        if (CFG.feed.scrollEnabled === false) {
-            feedPosition.setValue(targetPosition);
-        } else {
+        var feedPosition = feedTransform.property("ADBE Position");
+        if (scrolling) {
+            var scrollDistance = (CFG.feed.endFocusY-CFG.feed.startFocusY)*factor;
             animate(feedPosition, CFG.feed.scrollStart, CFG.feed.scrollEnd,
-                [CFG.feed.center[0],CFG.feed.center[1]-CFG.feed.startFocusY*factor,CFG.feed.center[2]],
-                targetPosition, true, scrollEase);
+                [CFG.feed.center[0],CFG.feed.center[1]+scrollDistance,CFG.feed.center[2]],
+                CFG.feed.center, true, scrollEase);
+        }
+        var postTurnStart = scrolling ? CFG.feed.scrollEnd : 0;
+        if (postTurnStart < CFG.duration) {
+            // Turn around the point framed by the camera. Marks are inside the same precomp.
+            var postEndRotation = CFG.feed.endRotation || [-1.8, 5, 1];
+            var postRotationAxes = ["ADBE Rotate X", "ADBE Rotate Y", "ADBE Rotate Z"];
+            for (var axis = 0; axis < postRotationAxes.length; axis++) {
+                animate(requiredProperty(feedTransform, postRotationAxes[axis]),
+                    postTurnStart, CFG.duration, 0, postEndRotation[axis], true, [33.33, 33.33]);
+            }
         }
         if (CFG.profile.enabled) {
             var profileComp = cropped("PROFILE_KEYLIGHT", screenshot, CFG.profile, precomps);
