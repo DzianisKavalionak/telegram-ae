@@ -42,9 +42,14 @@
         },
         sceneBlur: {enabled: true, radius: 4, holdUntil: 1.9, clearAt: 2.8},
         shadow: {enabled: true, opacity: 14, distance: 5, softness: 18},
-        motionBlur: true
+        motionBlur: false
     };
 
+    // При начитке добавь wordTiming к нужному элементу highlights.
+    // Для строки шириной 420 px пример двух слов:
+    // wordTiming: [[[0.60, 1.10, 155], [1.18, 1.75, 420]]]
+    // Время от начала композиции, правая граница в px от начала строки.
+    // При прокрутке к началу начитки первые слова должны оставаться читаемыми.
     settings.mappingStatus = "example";
     return {settings: settings, highlights: []};
 }());

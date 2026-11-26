@@ -183,12 +183,63 @@
         }
         return comp;
     }
+    function validateWordTiming(spec, highlightNumber) {
+        var audio = CFG.audio;
+        if (!audio || !audio.file || typeof audio.startFrame !== "number" || !isFinite(audio.startFrame) ||
+            typeof audio.duration !== "number" || !isFinite(audio.duration) || audio.duration <= 0) {
+            fail("Для выделения по словам нужна начитка с заданным началом и длительностью.");
+        }
+        if (spec.wordTiming.length !== spec.rows.length) {
+            fail("Число строк wordTiming должно совпадать с rows в выделении " + highlightNumber + ".");
+        }
+        var previousEnd = audio.startFrame / CFG.fps;
+        var audioEnd = previousEnd + audio.duration;
+        var i, j, words, word, previousWidth, rowWidth;
+        for (i = 0; i < spec.rows.length; i++) {
+            words = spec.wordTiming[i];
+            rowWidth = spec.rows[i][2];
+            previousWidth = 0;
+            if (!words || !words.length) { fail("Нет тайминга слов в строке " + (i+1) + "."); }
+            for (j = 0; j < words.length; j++) {
+                word = words[j];
+                if (!word || word.length !== 3 ||
+                    typeof word[0] !== "number" || !isFinite(word[0]) ||
+                    typeof word[1] !== "number" || !isFinite(word[1]) ||
+                    typeof word[2] !== "number" || !isFinite(word[2]) ||
+                    word[0] < previousEnd || word[1] <= word[0] || word[1] > audioEnd + 0.00001 ||
+                    word[2] <= previousWidth || word[2] > rowWidth) {
+                    fail("Неверные время или граница слова " + (j+1) + " в строке " + (i+1) + ".");
+                }
+                previousEnd = word[1];
+                previousWidth = word[2];
+            }
+            if (previousWidth !== rowWidth) { fail("Последнее слово должно раскрывать всю строку " + (i+1) + "."); }
+        }
+    }
+    function revealWithVoice(layer, rowWidth, words) {
+        var scale = requiredProperty(tr(layer), "ADBE Scale");
+        var previousWidth = 0, i, word;
+        layer.inPoint = words[0][0];
+        for (i = 0; i < words.length; i++) {
+            word = words[i];
+            scale.setValueAtTime(word[0], [100 * previousWidth / rowWidth, 100]);
+            scale.setValueAtTime(word[1], [100 * word[2] / rowWidth, 100]);
+            previousWidth = word[2];
+        }
+        for (i = 1; i <= scale.numKeys; i++) {
+            scale.setInterpolationTypeAtKey(i, KeyframeInterpolationType.LINEAR, KeyframeInterpolationType.LINEAR);
+        }
+    }
     function addHighlights(comp, crop) {
         var i, j, spec, row, totalWidth, elapsed, rowDuration, layer, contents, path, fill, y, h;
         for (i = 0; i < HIGHLIGHTS.length; i++) {
             spec = HIGHLIGHTS[i]; totalWidth = 0; elapsed = 0;
-            if (!spec.rows || spec.rows.length === 0 || spec.duration <= 0 || spec.start < 0 ||
-                spec.start + spec.duration > CFG.duration) { fail("Неверный тайминг выделения " + (i+1)); }
+            if (!spec.rows || spec.rows.length === 0) { fail("Нет строк в выделении " + (i+1) + "."); }
+            if (spec.wordTiming) {
+                validateWordTiming(spec, i+1);
+            } else if (spec.duration <= 0 || spec.start < 0 || spec.start + spec.duration > CFG.duration) {
+                fail("Неверный тайминг выделения " + (i+1));
+            }
             for (j = 0; j < spec.rows.length; j++) {
                 row = spec.rows[j];
                 if (row[2] <= 0 || row[3] <= 0 || row[0] < crop[0] || row[1] < crop[1] ||
@@ -212,12 +263,16 @@
                 tr(layer).property("ADBE Position").setValue([row[0]-crop[0],y]);
                 tr(layer).property("ADBE Opacity").setValue(typeof spec.opacity === "number" ? spec.opacity : 100);
                 layer.blendingMode = BlendingMode.MULTIPLY;
-                rowDuration = spec.duration * row[2] / totalWidth;
-                layer.inPoint = spec.start + elapsed;
                 layer.outPoint = CFG.duration;
-                animate(tr(layer).property("ADBE Scale"), spec.start+elapsed,
-                    spec.start+elapsed+rowDuration, [0,100], [100,100], false);
-                elapsed += rowDuration;
+                if (spec.wordTiming) {
+                    revealWithVoice(layer, row[2], spec.wordTiming[j]);
+                } else {
+                    rowDuration = spec.duration * row[2] / totalWidth;
+                    layer.inPoint = spec.start + elapsed;
+                    animate(tr(layer).property("ADBE Scale"), spec.start+elapsed,
+                        spec.start+elapsed+rowDuration, [0,100], [100,100], false);
+                    elapsed += rowDuration;
+                }
             }
         }
     }
@@ -297,13 +352,16 @@
         layer.comment = "Camera Lens Blur over the complete scene from frame zero. Radius reaches zero at scroll end; native camera DOF remains separate.";
     }
     function addCamera(main) {
+        var scrolling = CFG.feed.scrollEnabled !== false;
+        var moveStart = scrolling ? CFG.feed.scrollStart : 0;
+        var moveEnd = scrolling ? CFG.feed.scrollEnd : CFG.duration;
         var rig = main.layers.addNull(CFG.duration);
         rig.name = "CAMERA_RIG_EDIT_MOVEMENT"; rig.threeDLayer = true;
         tr(rig).property("ADBE Anchor Point").setValue([0,0,0]);
         tr(rig).property("ADBE Position").setValue([CFG.width/2,CFG.height/2,0]);
         var names = ["ADBE Rotate X","ADBE Rotate Y","ADBE Rotate Z"], i;
         for (i = 0; i < names.length; i++) {
-            animate(tr(rig).property(names[i]), 0, CFG.duration,
+            animate(tr(rig).property(names[i]), moveStart, moveEnd,
                 CFG.camera.startRotation[i], CFG.camera.endRotation[i], true);
         }
         var camera = main.layers.addCamera("CAMERA_3D", [CFG.width/2,CFG.height/2]);
@@ -313,7 +371,7 @@
         var cameraTransform = tr(camera);
         // A camera's Point of Interest uses the ADBE Anchor Point match name.
         requiredProperty(cameraTransform, "ADBE Anchor Point").setValue([0,0,0]);
-        animate(requiredProperty(cameraTransform, "ADBE Position"), 0, CFG.duration,
+        animate(requiredProperty(cameraTransform, "ADBE Position"), moveStart, moveEnd,
             [0,0,-CFG.camera.zoom/CFG.camera.startMagnification],
             [0,0,-CFG.camera.zoom/CFG.camera.endMagnification], true);
         var options = requiredProperty(camera, "ADBE Camera Options Group");
